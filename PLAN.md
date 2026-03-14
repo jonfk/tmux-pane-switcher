@@ -16,7 +16,7 @@ Use an observer-based architecture for v1:
 - A thin tmux plugin layer in shell for TPM compatibility, key bindings, and process supervision
 - A separately installed Rust CLI as the core program
 - A Rust workspace with clear internal boundaries between CLI wiring, core domain logic, tmux integration, process inspection, and SQLite storage
-- A long-lived Rust observer that attaches to tmux in control mode and observes pane output and metadata changes
+- A long-lived Rust observer manager that maintains one tmux control-mode client per tmux session and observes pane output and metadata changes across the server
 - Rust-owned process inspection and heuristic evaluation using tmux metadata plus OS process information
 - SQLite, managed by the Rust CLI, as the source of truth for event history and current pane state shared across commands
 
@@ -32,8 +32,9 @@ This is a better fit than a hook-first design because it avoids depending on she
   - The Rust CLI is expected to already be installed and available on `PATH`
 - Supported signal families:
   - tmux control-mode output notifications such as `%output`
+  - tmux control-mode lifecycle notifications scoped to each attached session
   - tmux pane metadata such as `pane_current_command`, `pane_pid`, `pane_tty`, `pane_title`, and pane location identifiers
-  - tmux-native alerts such as bell, activity, and silence when available
+  - observer-derived bell, activity, and silence heuristics computed from decoded control-mode output and timers
   - OS process inspection for the pane's foreground process tree
 - Persistence model:
   - append-only event log
@@ -44,8 +45,9 @@ This is a better fit than a hook-first design because it avoids depending on she
 - v1 should not depend on zsh or bash hooks
 - v1 should not require programs such as Codex, Claude, test runners, or dev servers to emit custom signals
 - v1 should not assume tmux can observe arbitrary macOS Notification Center notifications triggered by programs
+- v1 should not rely on tmux `monitor-bell`, `monitor-activity`, or `monitor-silence` semantics
 - v1 TPM installation should not be responsible for compiling or installing the Rust core binary
-- tmux-observable signals include pane output, bells, and tmux alerts; arbitrary desktop notifications do not appear to be a reliable tmux signal source
+- tmux-observable signals should come from control-mode output and tmux metadata; arbitrary desktop notifications do not appear to be a reliable tmux signal source
 
 Optional explicit program integration may still be added later as a higher-confidence hinting layer, but it should not be required for the base product.
 
@@ -80,12 +82,24 @@ This works across windows and tmux sessions as long as the tmux server is still 
 
 ## Observer Model
 
-The observer should run as a long-lived tmux control-mode client and continuously ingest:
+The observer should run as a single long-lived Rust process with an internal session supervisor.
+
+Because a tmux control-mode client can observe only the session to which it is attached, the observer should maintain one control-mode client per tmux session.
+
+The session supervisor should:
+
+- discover sessions on startup with tmux commands such as `list-sessions`
+- spawn one control-mode child client per session
+- maintain one parser and event stream per child client
+- react to session creation and destruction by adding or removing child clients
+- periodically reconcile server-wide tmux state so pane identity and liveness remain correct
+
+Each per-session control-mode client should continuously ingest:
 
 - `%output` notifications to detect live pane output
+- decoded control characters from `%output`, including BEL (`\007`), to detect bells without relying on tmux alert notifications
 - pane lifecycle changes such as pane death or layout changes
-- pane metadata snapshots for all panes on startup and periodically during internal consistency checks
-- tmux alert state where available
+- pane metadata snapshots for panes in its session on startup and during periodic internal consistency checks
 
 The observer should maintain a live per-pane model with:
 
@@ -94,11 +108,13 @@ The observer should maintain a live per-pane model with:
 - current process classification
 - whether the pane is running a shell or a non-shell foreground process
 - last output time
-- last bell or tmux alert time
+- last bell time
+- last activity transition time
+- last silence transition time
 - last inferred "interesting" transition time
 - the reason the pane became interesting
 
-The observer should treat live tmux state as authoritative. On startup it should take a full pane snapshot, and during runtime it should periodically compare current tmux state against stored state so stale database entries are overwritten or invalidated before they can affect ranking or jumps.
+The observer should treat live tmux state as authoritative. On startup it should take a full pane snapshot across all sessions, and during runtime it should periodically compare current tmux state against stored state so stale database entries are overwritten or invalidated before they can affect ranking or jumps.
 
 ## Program Classification
 
@@ -130,17 +146,18 @@ A pane becomes interesting when one or more of these heuristics fire:
 
 - A pane is running a non-shell foreground process that is likely user-relevant
 - A pane in class `agent` or `batch` produces output and then goes idle past a configured threshold
-- A pane receives a bell or a tmux alert
+- A pane emits a bell character observed in decoded control-mode output
 - A pane running a non-shell process returns to a shell, suggesting that work has completed
 - A pane changes from one classified process type to another in a way that suggests a new task started
+- A pane produces new output after a quiet period or produces an output burst that suggests state change
 
 Suggested class-specific behavior:
 
 - `agent`: interesting on output bursts, on idle-after-output, and on process exit back to shell
 - `batch`: interesting on start, on failure signals if detectable, on idle-after-output, and on process exit back to shell
-- `server_watch`: interesting on bell or explicit alert, but not merely because output stops
+- `server_watch`: interesting on bell or unusually meaningful fresh output, but not merely because output stops
 - `interactive_other`: interesting while active if the process is not a shell, but generally lower priority than `agent` and `batch`
-- `shell`: usually not interesting unless paired with a bell or another alert signal
+- `shell`: usually not interesting unless paired with a bell or another heuristic signal
 
 This avoids the biggest false positive in a generic "silence means done" model: long-lived quiet processes such as servers or SSH sessions that may stop output without having completed.
 
@@ -188,7 +205,9 @@ Example payload:
 
 - `pane_snapshot`
 - `pane_output`
-- `pane_alert`
+- `pane_bell`
+- `pane_activity`
+- `pane_silence`
 - `process_classified`
 - `heuristic_transition`
 - `pane_exit`
@@ -282,7 +301,9 @@ CREATE TABLE pane_state (
   is_interesting INTEGER NOT NULL DEFAULT 0,
   interest_reason TEXT,
   last_output_at TEXT,
-  last_alert_at TEXT,
+  last_bell_at TEXT,
+  last_activity_at TEXT,
+  last_silence_at TEXT,
   last_interest_at TEXT,
   last_process_change_at TEXT,
   rank_updated_at TEXT NOT NULL
@@ -293,7 +314,8 @@ ON pane_state(
   server_id,
   is_interesting DESC,
   last_interest_at DESC,
-  last_alert_at DESC,
+  last_bell_at DESC,
+  last_activity_at DESC,
   last_output_at DESC
 );
 ```
@@ -314,11 +336,23 @@ ON pane_state(
 - Update `pane_state.last_output_at`
 - Re-evaluate the pane heuristics
 
-### On `pane_alert`
+### On `pane_bell`
 
 - Insert an `events` row
-- Update `pane_state.last_alert_at`
-- Mark the pane interesting with an alert-related `interest_reason`
+- Update `pane_state.last_bell_at`
+- Mark the pane interesting with a bell-related `interest_reason`
+
+### On `pane_activity`
+
+- Insert an `events` row
+- Update `pane_state.last_activity_at`
+- Re-evaluate the pane heuristics
+
+### On `pane_silence`
+
+- Insert an `events` row
+- Update `pane_state.last_silence_at`
+- Re-evaluate the pane heuristics using class-specific idle thresholds
 
 ### On `process_classified`
 
@@ -347,7 +381,7 @@ Initial ranking should prefer:
 
 1. Panes that are currently interesting
 2. Most recently interesting panes
-3. Panes with recent bells or tmux alerts
+3. Panes with recent bells or other high-confidence observer-derived transitions
 4. Panes with recent output
 5. Other non-dead panes as a fallback
 
@@ -364,7 +398,8 @@ WHERE ps.server_id = ?
 ORDER BY
   ps.is_interesting DESC,
   ps.last_interest_at DESC NULLS LAST,
-  ps.last_alert_at DESC NULLS LAST,
+  ps.last_bell_at DESC NULLS LAST,
+  ps.last_activity_at DESC NULLS LAST,
   ps.last_output_at DESC NULLS LAST
 LIMIT 1;
 ```
@@ -485,15 +520,18 @@ Acceptance criteria:
 
 ### Phase 2: Control-Mode Observer
 
-- Add a long-lived Rust observer process that attaches to tmux in control mode
-- Ingest `%output` and related pane notifications
+- Add a long-lived Rust observer manager process that maintains one tmux control-mode client per session
+- Ingest `%output` and related pane notifications from every observed session
 - Perform a full pane snapshot on startup and periodic internal consistency checks during runtime
+- Decode `%output` escapes so bell characters can be observed directly from output
 - Persist output activity and pane lifecycle changes
 
 Acceptance criteria:
 
 - Pane output updates `last_output_at`
+- Bell characters observed in output produce `pane_bell` events
 - New and dead panes are reflected in state
+- New sessions cause a new control-mode client to be started automatically
 - Observer restarts restore accurate current pane state without corrupting history
 
 ### Phase 3: Process Classification
@@ -512,12 +550,14 @@ Acceptance criteria:
 
 - Implement class-specific heuristics for when a pane becomes interesting
 - Add idle-after-output thresholds where appropriate
-- Rank panes by `is_interesting`, `last_interest_at`, alert recency, and output recency
+- Re-implement bell, activity, and silence as observer-driven heuristics instead of tmux alert semantics
+- Rank panes by `is_interesting`, `last_interest_at`, heuristic transition recency, and output recency
 
 Acceptance criteria:
 
 - Agent and batch panes become interesting after likely completion or meaningful state changes
 - Server and watch panes do not become false positives just because output stops
+- Bell and output-driven heuristic transitions are recorded without enabling tmux monitor alerts
 - Ranked queries match the intended MRU behavior
 
 ### Phase 5: Jump and Selection UX
@@ -552,7 +592,8 @@ Acceptance criteria:
 Acceptance criteria:
 
 - A new user can install the Rust CLI, install the TPM wrapper, and run the observer from docs alone
-- The docs clearly explain the difference between tmux-observable alerts and arbitrary OS notifications
+- The docs clearly explain that control-mode observation is session-scoped, so the observer maintains one control-mode client per session
+- The docs clearly explain the difference between observer-derived signals and arbitrary OS notifications
 - The docs clearly explain that TPM does not install the Rust binary
 
 ## Open Questions
@@ -568,7 +609,7 @@ Acceptance criteria:
 
 Write a Phase 1 and Phase 2 implementation spec with:
 
-- exact tmux control-mode commands and observer lifecycle
+- exact tmux control-mode commands, per-session child-client lifecycle, and supervisor reconciliation behavior
 - exact Rust CLI command names and wrapper invocation contract
 - exact SQLite initialization path
 - exact internal service boundaries between CLI wiring, event normalization, heuristics, and persistence

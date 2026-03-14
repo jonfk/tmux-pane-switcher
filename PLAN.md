@@ -84,7 +84,7 @@ The observer should run as a long-lived tmux control-mode client and continuousl
 
 - `%output` notifications to detect live pane output
 - pane lifecycle changes such as pane death or layout changes
-- pane metadata snapshots for all panes on startup and periodically during reconciliation
+- pane metadata snapshots for all panes on startup and periodically during internal consistency checks
 - tmux alert state where available
 
 The observer should maintain a live per-pane model with:
@@ -97,6 +97,8 @@ The observer should maintain a live per-pane model with:
 - last bell or tmux alert time
 - last inferred "interesting" transition time
 - the reason the pane became interesting
+
+The observer should treat live tmux state as authoritative. On startup it should take a full pane snapshot, and during runtime it should periodically compare current tmux state against stored state so stale database entries are overwritten or invalidated before they can affect ranking or jumps.
 
 ## Program Classification
 
@@ -144,7 +146,7 @@ This avoids the biggest false positive in a generic "silence means done" model: 
 
 ## Event Model
 
-All observer and reconciliation paths should normalize their inputs to a common event shape handled by internal Rust services.
+All observer and internal state-sync paths should normalize their inputs to a common event shape handled by internal Rust services.
 
 Example payload:
 
@@ -304,6 +306,7 @@ ON pane_state(
 - Upsert `panes`
 - Refresh pane identity, path, title, pid, command, and liveness in `pane_state`
 - If process classification changed, emit `process_classified`
+- Mark any previously live panes missing from the latest tmux snapshot as non-running or dead so stale targets stop participating in ranking and jumps
 
 ### On `pane_output`
 
@@ -336,7 +339,7 @@ ON pane_state(
 - Insert an `events` row
 - Mark `panes.is_alive = 0`
 - Mark `pane_state.is_running = 0`
-- Either remove `pane_state` immediately or defer cleanup to a reconciler
+- Keep historical events, but ensure the pane is no longer eligible for ranking or jump selection
 
 ## Ranking Model
 
@@ -368,6 +371,8 @@ LIMIT 1;
 
 This should support MRU-style switching through panes that have recently become relevant to the user.
 
+Only panes confirmed alive in the latest tmux state should be considered valid jump targets. Historical rows may remain in the database, but stale pane state must not outrank or survive over newer tmux observations.
+
 ## Proposed CLI Surface
 
 Keep tmux integration thin by exposing a small Rust CLI surface for top-level operations while keeping event recording, classification, and heuristic evaluation inside internal Rust services.
@@ -375,11 +380,9 @@ Keep tmux integration thin by exposing a small Rust CLI surface for top-level op
 Commands:
 
 - `observe`
-- `snapshot-panes`
 - `list-ranked`
 - `jump-top`
 - `jump-next`
-- `reconcile`
 - `doctor`
 
 The TPM wrapper script should call these commands and should not duplicate application logic.
@@ -404,7 +407,6 @@ crates/
         observe.rs
         list_ranked.rs
         jump.rs
-        reconcile.rs
         doctor.rs
   tps-core/
     src/
@@ -470,7 +472,6 @@ tests/
 - Add a Rust workspace with initial crates for CLI wiring, core logic, tmux integration, storage, and process inspection
 - Add SQLite schema and initialization path owned by the Rust CLI, with automatic startup initialization for commands that require the database
 - Add Rust CLI commands for:
-  - pane snapshot collection
   - ranking query
   - jump-to-pane query output
 - Add minimal tmux command bindings
@@ -479,21 +480,21 @@ Acceptance criteria:
 
 - The wrapper can invoke the installed Rust CLI
 - The Rust CLI initializes its database
-- A manually inserted pane snapshot updates pane state
+- The observer performs a startup pane snapshot and updates pane state
 - The plugin can query the top-ranked pane target
 
 ### Phase 2: Control-Mode Observer
 
 - Add a long-lived Rust observer process that attaches to tmux in control mode
 - Ingest `%output` and related pane notifications
-- Reconcile pane metadata on startup and periodically
+- Perform a full pane snapshot on startup and periodic internal consistency checks during runtime
 - Persist output activity and pane lifecycle changes
 
 Acceptance criteria:
 
 - Pane output updates `last_output_at`
 - New and dead panes are reflected in state
-- Observer restarts can reconcile current panes without corrupting history
+- Observer restarts restore accurate current pane state without corrupting history
 
 ### Phase 3: Process Classification
 

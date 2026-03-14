@@ -17,29 +17,39 @@ fn list_ranked_outputs_valid_tmux_pane_targets() {
         ])
         .expect("upsert snapshots");
 
-    let tmux_target_output = run_cli(&db_path, &[
-        "list-ranked",
-        "--server-key",
-        server_key,
-        "--format",
-        "tmux-target",
-        "--limit",
-        "2",
-    ]);
+    let tmux_target_output = run_cli(
+        &db_path,
+        &[
+            "list-ranked",
+            "--server-key",
+            server_key,
+            "--format",
+            "tmux-target",
+            "--limit",
+            "2",
+        ],
+    );
     assert_eq!(tmux_target_output, "%2\n%1\n");
 
-    let table_output = run_cli(&db_path, &[
-        "list-ranked",
-        "--server-key",
-        server_key,
-        "--format",
-        "table",
-        "--limit",
-        "2",
-    ]);
+    let table_output = run_cli(
+        &db_path,
+        &[
+            "list-ranked",
+            "--server-key",
+            server_key,
+            "--format",
+            "table",
+            "--limit",
+            "2",
+        ],
+    );
     let first_column: Vec<&str> = table_output
         .lines()
-        .map(|line| line.split('\t').next().expect("table row has target column"))
+        .map(|line| {
+            line.split('\t')
+                .next()
+                .expect("table row has target column")
+        })
         .collect();
     assert_eq!(first_column, vec!["%2", "%1"]);
 
@@ -89,15 +99,18 @@ fn tmux_target_output_can_be_used_with_select_pane() {
         ])
         .expect("upsert snapshots");
 
-    let tmux_target_output = run_cli(&db_path, &[
-        "list-ranked",
-        "--server-key",
-        &server_key,
-        "--format",
-        "tmux-target",
-        "--limit",
-        "1",
-    ]);
+    let tmux_target_output = run_cli(
+        &db_path,
+        &[
+            "list-ranked",
+            "--server-key",
+            &server_key,
+            "--format",
+            "tmux-target",
+            "--limit",
+            "1",
+        ],
+    );
     let target = tmux_target_output.trim();
     assert_eq!(target, pane_two);
 
@@ -216,7 +229,16 @@ impl TempTmuxServer {
     }
 
     fn new_session(&self, session_name: &str) {
-        self.run(["new-session", "-d", "-s", session_name, "-x", "120", "-y", "40"]);
+        self.run([
+            "new-session",
+            "-d",
+            "-s",
+            session_name,
+            "-x",
+            "120",
+            "-y",
+            "40",
+        ]);
     }
 
     fn split_window(&self, target: &str) -> String {

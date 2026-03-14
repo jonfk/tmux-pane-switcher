@@ -118,8 +118,35 @@ It checks that:
 
 This script is important for validating which fields can be populated directly from tmux and where tmux metadata alone is insufficient for richer foreground-process classification.
 
+### `validate_snapshot_parsing.py`
+
+Validates snapshot field parsing assumptions.
+
+It checks that:
+
+- tmux escapes tabs in `window_name` when using `list-panes -F`
+- tmux leaves newlines in `pane_current_path` raw, which breaks delimiter-based row parsing
+- the `tps-tmux` fake-tmux regression test for tabs/newlines passes
+
+This script is important for validating both the tmux-side behavior behind the bug report and the crate-side regression test that proves the parser fix.
+
 ## Notes
 
 - These validators currently reflect observed behavior on tmux `3.5a`.
 - They are behavioral checks, not full integration tests for the future Rust implementation.
 - If a validator starts failing after a tmux upgrade, the failure may indicate either a regression in the experiment or a real tmux behavior change that should be reflected in `PLAN.md`.
+
+## Snapshot Parsing Experiment
+
+Run it from the repo root:
+
+```sh
+python3 experiments/validate_snapshot_parsing.py
+```
+
+Expected result:
+
+- the script prints `PASS validate_snapshot_parsing`
+- the `window_name_bytes` line contains `5c 74` for `\t`
+- the `pane_current_path_bytes` line contains a literal `0a` newline byte inside the path payload
+- the cargo test tail shows `collect_snapshot_handles_tabs_and_newlines ... ok`

@@ -69,9 +69,15 @@ impl TmuxClient {
     }
 
     pub fn jump(&self, target: &JumpTarget) -> Result<()> {
-        self.run(["switch-client", "-t", &target.session_id])?;
-        self.run(["select-window", "-t", &target.window_id])?;
-        self.run(["select-pane", "-t", &target.pane_id])?;
+        self.run_on_server(
+            &target.server_key,
+            ["switch-client", "-t", &target.session_id],
+        )?;
+        self.run_on_server(
+            &target.server_key,
+            ["select-window", "-t", &target.window_id],
+        )?;
+        self.run_on_server(&target.server_key, ["select-pane", "-t", &target.pane_id])?;
         Ok(())
     }
 
@@ -88,6 +94,20 @@ impl TmuxClient {
             .into_iter()
             .map(|arg| arg.as_ref().to_string())
             .collect();
+        self.run_command(collected)
+    }
+
+    fn run_on_server<I, S>(&self, server_key: &str, args: I) -> Result<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut collected = vec!["-S".to_string(), server_key.to_string()];
+        collected.extend(args.into_iter().map(|arg| arg.as_ref().to_string()));
+        self.run_command(collected)
+    }
+
+    fn run_command(&self, collected: Vec<String>) -> Result<String> {
         let output = Command::new(&self.binary)
             .args(&collected)
             .output()
@@ -171,7 +191,13 @@ impl EmptyFallback for str {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_snapshot_line;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    use tps_core::JumpTarget;
+
+    use super::{TmuxClient, parse_snapshot_line};
 
     #[test]
     fn parses_snapshot_rows() {
@@ -180,5 +206,72 @@ mod tests {
         assert_eq!(snapshot.session_id, "$1");
         assert_eq!(snapshot.window_activity, Some(1773499610));
         assert!(snapshot.pane_active);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn jump_uses_target_server_socket() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tps-tmux-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let log_path = temp_dir.join("tmux.log");
+        let script_path = temp_dir.join("fake-tmux.sh");
+        fs::write(
+            &script_path,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n",
+                log_path.display()
+            ),
+        )
+        .expect("write fake tmux");
+
+        let mut permissions = fs::metadata(&script_path)
+            .expect("stat fake tmux")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod fake tmux");
+
+        let tmux = TmuxClient {
+            binary: script_path.to_string_lossy().into_owned(),
+        };
+        let target = JumpTarget {
+            server_key: "/tmp/custom.sock".to_string(),
+            session_id: "$1".to_string(),
+            window_id: "@2".to_string(),
+            pane_id: "%3".to_string(),
+        };
+
+        tmux.jump(&target).expect("jump succeeds");
+
+        let logged = fs::read_to_string(&log_path).expect("read log");
+        let args: Vec<&str> = logged.lines().collect();
+        assert_eq!(
+            args,
+            vec![
+                "-S",
+                "/tmp/custom.sock",
+                "switch-client",
+                "-t",
+                "$1",
+                "-S",
+                "/tmp/custom.sock",
+                "select-window",
+                "-t",
+                "@2",
+                "-S",
+                "/tmp/custom.sock",
+                "select-pane",
+                "-t",
+                "%3",
+            ]
+        );
+
+        fs::remove_dir_all(temp_dir).expect("remove temp dir");
     }
 }

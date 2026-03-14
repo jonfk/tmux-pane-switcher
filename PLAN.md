@@ -475,8 +475,7 @@ Commands:
 
 - `observe`
 - `list-ranked`
-- `jump-top`
-- `jump-next`
+- `jump`
 - `doctor`
 
 The TPM wrapper script should call these commands and should not duplicate application logic.
@@ -568,7 +567,7 @@ tests/
 - Add SQLite schema and initialization path owned by the Rust CLI, with automatic startup initialization for commands that require the database
 - Add Rust CLI commands for:
   - ranking query
-  - jump-to-pane query output
+  - jump
 - Add minimal tmux command bindings
 
 Acceptance criteria:
@@ -629,7 +628,7 @@ Acceptance criteria:
 
 ### Phase 5: Jump and Selection UX
 
-- Add `jump-top`
+- Add `jump`
 - Add cycling or menu-based pane selection
 - Optionally derive a window-oriented view from pane rankings
 

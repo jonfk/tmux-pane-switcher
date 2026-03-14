@@ -565,7 +565,9 @@ tests/
 - Add a shell wrapper that locates and invokes the Rust CLI
 - Add a Rust workspace with initial crates for CLI wiring, core logic, tmux integration, storage, and process inspection
 - Add SQLite schema and initialization path owned by the Rust CLI, with automatic startup initialization for commands that require the database
+- Add a Phase 1 `observe` command that performs one startup snapshot and exits; it should not yet run as a long-lived control-mode observer
 - Add Rust CLI commands for:
+  - one-shot startup `observe`
   - ranking query
   - jump
 - Add minimal tmux command bindings
@@ -574,12 +576,12 @@ Acceptance criteria:
 
 - The wrapper can invoke the installed Rust CLI
 - The Rust CLI initializes its database
-- The observer performs a startup pane snapshot and updates pane state
+- The Phase 1 `observe` command performs a startup pane snapshot, updates pane state, and exits
 - The plugin can query the top-ranked pane target
 
 ### Phase 2: Control-Mode Observer
 
-- Add a long-lived Rust observer manager process that maintains one tmux control-mode client per session
+- Extend `observe` from the Phase 1 one-shot startup snapshot into a long-lived Rust observer manager process that maintains one tmux control-mode client per session
 - Ingest `%output`, `%extended-output`, and related pane notifications from every observed session
 - Perform a full pane snapshot on startup and periodic internal consistency checks during runtime
 - Decode control-mode octal escapes into per-pane byte streams

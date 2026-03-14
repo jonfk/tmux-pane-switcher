@@ -1,10 +1,27 @@
 # tmux-pane-switcher
+
 - A tmux plugin
-- configuration should be enabled through the tmux.conf
-- A tmux pane/window switcher that tracks notifications and pending programs running from each pane or window.
-- It would order the panes by most recently notified or started/pending program so that the user can switch quickly to a recent pane.
-- The idea is to make easy coming back to a pane where the user started an async thing across sessions. This would also give visibility to these async actions.
-    - Some examples of async actions are: 
-        - Start a dev server
-        - Start a compilation run or test run
-        - An agent turn in a coding agent (codex/claude)
+- Configuration should be enabled through `tmux.conf`
+- A tmux pane/window switcher that observes panes and ranks the ones that are currently or recently "interesting"
+- It should let the user jump back to panes in most recently used order when those panes are doing useful work or have likely changed state
+- The goal is to make it easy to come back to a pane where the user started an async or semi-async thing across sessions, while also giving visibility into that work
+
+Examples of panes that may become interesting:
+
+- A coding agent turn in a coding agent such as Codex or Claude
+- A compilation run or test run that has produced output and then gone quiet
+- A program that rings a bell or triggers a tmux alert
+- A pane running a non-shell foreground process that is likely the reason the user will want to return
+
+The key idea is to use heuristics instead of relying primarily on tmux hooks or shell integration:
+
+- Observe pane metadata and output from tmux itself
+- Classify the foreground program or process tree in each pane
+- Use heuristics to decide when a pane becomes interesting
+- Rank interesting panes by recency so the user can switch through them quickly
+
+Important limitation:
+
+- tmux can observe pane output, bells, and tmux alerts
+- tmux cannot be assumed to expose arbitrary macOS Notification Center notifications requested by programs
+- v1 should therefore focus on tmux-observable signals and process heuristics, not direct OS notification capture

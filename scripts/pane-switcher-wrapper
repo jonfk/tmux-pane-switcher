@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+current_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$(cd "${current_dir}/.." && pwd)"
+
+cli_bin="$(tmux show-option -gqv '@pane-switcher-cli' || true)"
+if [[ -z "${cli_bin}" ]]; then
+  cli_bin="${TPS_CLI_BIN:-tmux-pane-switcher}"
+fi
+
+if ! command -v "${cli_bin}" >/dev/null 2>&1; then
+  tmux display-message "tmux-pane-switcher CLI not found; set @pane-switcher-cli or install tmux-pane-switcher"
+  exit 1
+fi
+
+if ! output="$("${cli_bin}" "$@" 2>&1)"; then
+  tmux display-message "${output}"
+  exit 1
+fi
+
+if [[ $# -gt 0 && "$1" == "observe" && -n "${output}" ]]; then
+  tmux display-message "${output}"
+fi
+
+exit 0

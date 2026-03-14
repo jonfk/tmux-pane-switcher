@@ -1,0 +1,23 @@
+[workspace]
+members = [
+  "crates/tps-cli",
+  "crates/tps-core",
+  "crates/tps-process",
+  "crates/tps-store",
+  "crates/tps-tmux",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.48", features = ["derive"] }
+directories = "6.0.0"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.17"

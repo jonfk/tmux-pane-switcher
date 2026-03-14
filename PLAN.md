@@ -31,10 +31,11 @@ This is a better fit than a hook-first design because it avoids depending on she
   - TPM installs only shell wrappers and tmux bindings
   - The Rust CLI is expected to already be installed and available on `PATH`
 - Supported signal families:
-  - tmux control-mode output notifications such as `%output`
+  - tmux control-mode output notifications such as `%output` and `%extended-output`
   - tmux control-mode lifecycle notifications scoped to each attached session
   - tmux pane metadata such as `pane_current_command`, `pane_pid`, `pane_tty`, `pane_title`, and pane location identifiers
-  - observer-derived bell, activity, and silence heuristics computed from decoded control-mode output and timers
+  - semantic terminal signals observed in decoded control-mode output, starting with BEL and `OSC 9`
+  - observer-derived activity and silence heuristics computed from decoded control-mode output and timers
   - OS process inspection for the pane's foreground process tree
 - Persistence model:
   - append-only event log
@@ -46,6 +47,7 @@ This is a better fit than a hook-first design because it avoids depending on she
 - v1 should not require programs such as Codex, Claude, test runners, or dev servers to emit custom signals
 - v1 should not assume tmux can observe arbitrary macOS Notification Center notifications triggered by programs
 - v1 should not rely on tmux `monitor-bell`, `monitor-activity`, or `monitor-silence` semantics
+- v1 should not rely on `capture-pane` screen contents alone for semantic escape-sequence detection, because screen capture does not preserve all control bytes observed in control mode
 - v1 TPM installation should not be responsible for compiling or installing the Rust core binary
 - tmux-observable signals should come from control-mode output and tmux metadata; arbitrary desktop notifications do not appear to be a reliable tmux signal source
 
@@ -96,10 +98,24 @@ The session supervisor should:
 
 Each per-session control-mode client should continuously ingest:
 
-- `%output` notifications to detect live pane output
-- decoded control characters from `%output`, including BEL (`\007`), to detect bells without relying on tmux alert notifications
+- `%output` and `%extended-output` notifications to detect live pane output
+- decoded control characters from control-mode output, including BEL (`\007`), to detect bells without relying on tmux alert notifications
+- semantic OSC sequences carried in pane output, starting with `OSC 9`
 - pane lifecycle changes such as pane death or layout changes
 - pane metadata snapshots for panes in its session on startup and during periodic internal consistency checks
+
+The control-mode parser should normalize `%output` and `%extended-output` into the same internal byte-stream event. `%extended-output` carries extra metadata, but the payload should be decoded and parsed the same way as `%output`.
+
+The parser must be streaming, not notification-local:
+
+- tmux octal escapes should be decoded per control-mode notification
+- decoded bytes should be appended to a per-pane stream buffer
+- an ANSI and OSC state machine should run over the per-pane byte stream
+- semantic sequences must be allowed to span multiple `%output` or `%extended-output` notifications
+
+The observer should not assume a single control-mode notification contains a whole OSC sequence. Fragmentation across notifications must be treated as normal.
+
+Control-mode byte observation is more authoritative than screen capture for semantic signals. `capture-pane` does not preserve all OSC or BEL bytes, so semantic signal detection should happen from the decoded control-mode stream rather than from rendered screen contents.
 
 The observer should maintain a live per-pane model with:
 
@@ -109,12 +125,32 @@ The observer should maintain a live per-pane model with:
 - whether the pane is running a shell or a non-shell foreground process
 - last output time
 - last bell time
+- last semantic signal time
+- last semantic signal type
 - last activity transition time
 - last silence transition time
 - last inferred "interesting" transition time
 - the reason the pane became interesting
 
 The observer should treat live tmux state as authoritative. On startup it should take a full pane snapshot across all sessions, and during runtime it should periodically compare current tmux state against stored state so stale database entries are overwritten or invalidated before they can affect ranking or jumps.
+
+## Validated Control-Mode Observations
+
+Local validation on tmux 3.5a confirmed that control mode exposes raw pane-output bytes for all of the following, in both `%output` and `%extended-output`, as tmux-octal-escaped payloads:
+
+- `OSC 0` with both BEL and ST terminators
+- `OSC 7` with both BEL and ST terminators
+- `OSC 8` hyperlinks with both BEL and ST terminators
+- `OSC 9` with both BEL and ST terminators
+- bare BEL (`\007`)
+
+The same validation also confirmed:
+
+- a single OSC sequence may be split across multiple control-mode notifications
+- `OSC 0` may both affect tmux state such as `pane_title` and remain visible as raw bytes in control mode
+- `capture-pane` does not preserve all of these semantic sequences, so it is insufficient as the primary observation source for them
+
+These findings should be treated as implementation assumptions for tmux 3.5a and captured in fixtures or integration tests.
 
 ## Program Classification
 
@@ -147,6 +183,7 @@ A pane becomes interesting when one or more of these heuristics fire:
 - A pane is running a non-shell foreground process that is likely user-relevant
 - A pane in class `agent` or `batch` produces output and then goes idle past a configured threshold
 - A pane emits a bell character observed in decoded control-mode output
+- A pane emits an explicit semantic signal such as `OSC 9`
 - A pane running a non-shell process returns to a shell, suggesting that work has completed
 - A pane changes from one classified process type to another in a way that suggests a new task started
 - A pane produces new output after a quiet period or produces an output burst that suggests state change
@@ -158,6 +195,12 @@ Suggested class-specific behavior:
 - `server_watch`: interesting on bell or unusually meaningful fresh output, but not merely because output stops
 - `interactive_other`: interesting while active if the process is not a shell, but generally lower priority than `agent` and `batch`
 - `shell`: usually not interesting unless paired with a bell or another heuristic signal
+
+Initial semantic-signal policy:
+
+- bare BEL is a high-confidence interesting signal
+- `OSC 9` is a high-confidence interesting signal
+- `OSC 0`, `OSC 7`, and `OSC 8` should be parsed and stored as observable semantic output, but they do not need to make a pane interesting in v1 unless later heuristics choose to use them
 
 This avoids the biggest false positive in a generic "silence means done" model: long-lived quiet processes such as servers or SSH sessions that may stop output without having completed.
 
@@ -206,6 +249,7 @@ Example payload:
 - `pane_snapshot`
 - `pane_output`
 - `pane_bell`
+- `pane_semantic_signal`
 - `pane_activity`
 - `pane_silence`
 - `process_classified`
@@ -222,6 +266,8 @@ Observer events may populate:
 - `pane_pid`
 - `observed_command`
 - `process_class`
+- `signal_type`
+- `signal_terminator`
 - `interest_reason`
 - `is_interesting`
 - `raw_payload`
@@ -273,6 +319,8 @@ CREATE TABLE events (
   pane_pid INTEGER,
   observed_command TEXT,
   process_class TEXT,
+  signal_type TEXT,
+  signal_terminator TEXT,
   interest_reason TEXT,
   is_interesting INTEGER,
   raw_payload TEXT
@@ -302,6 +350,8 @@ CREATE TABLE pane_state (
   interest_reason TEXT,
   last_output_at TEXT,
   last_bell_at TEXT,
+  last_signal_at TEXT,
+  last_signal_type TEXT,
   last_activity_at TEXT,
   last_silence_at TEXT,
   last_interest_at TEXT,
@@ -314,6 +364,7 @@ ON pane_state(
   server_id,
   is_interesting DESC,
   last_interest_at DESC,
+  last_signal_at DESC,
   last_bell_at DESC,
   last_activity_at DESC,
   last_output_at DESC
@@ -341,6 +392,13 @@ ON pane_state(
 - Insert an `events` row
 - Update `pane_state.last_bell_at`
 - Mark the pane interesting with a bell-related `interest_reason`
+
+### On `pane_semantic_signal`
+
+- Insert an `events` row with `signal_type` and `signal_terminator`
+- Update `pane_state.last_signal_at` and `pane_state.last_signal_type`
+- Re-evaluate the pane heuristics
+- If the signal is `osc_9`, mark the pane interesting with a signal-related `interest_reason`
 
 ### On `pane_activity`
 
@@ -381,7 +439,7 @@ Initial ranking should prefer:
 
 1. Panes that are currently interesting
 2. Most recently interesting panes
-3. Panes with recent bells or other high-confidence observer-derived transitions
+3. Panes with recent semantic signals such as `OSC 9` or other high-confidence observer-derived transitions
 4. Panes with recent output
 5. Other non-dead panes as a fallback
 
@@ -398,6 +456,7 @@ WHERE ps.server_id = ?
 ORDER BY
   ps.is_interesting DESC,
   ps.last_interest_at DESC NULLS LAST,
+  ps.last_signal_at DESC NULLS LAST,
   ps.last_bell_at DESC NULLS LAST,
   ps.last_activity_at DESC NULLS LAST,
   ps.last_output_at DESC NULLS LAST
@@ -459,6 +518,7 @@ crates/
     src/
       control_client.rs
       control_parser.rs
+      ansi_parser.rs
       snapshot.rs
       commands.rs
       ids.rs
@@ -521,15 +581,20 @@ Acceptance criteria:
 ### Phase 2: Control-Mode Observer
 
 - Add a long-lived Rust observer manager process that maintains one tmux control-mode client per session
-- Ingest `%output` and related pane notifications from every observed session
+- Ingest `%output`, `%extended-output`, and related pane notifications from every observed session
 - Perform a full pane snapshot on startup and periodic internal consistency checks during runtime
-- Decode `%output` escapes so bell characters can be observed directly from output
+- Decode control-mode octal escapes into per-pane byte streams
+- Run a streaming ANSI and OSC parser over each per-pane stream so fragmented sequences are handled correctly
+- Detect BEL directly from the decoded byte stream
+- Detect `OSC 9` directly from the decoded byte stream, with support for both BEL and ST terminators
 - Persist output activity and pane lifecycle changes
 
 Acceptance criteria:
 
 - Pane output updates `last_output_at`
 - Bell characters observed in output produce `pane_bell` events
+- `OSC 9` observed in either `%output` or `%extended-output` produces `pane_semantic_signal` events
+- A fragmented `OSC 9` split across multiple control-mode notifications is parsed correctly
 - New and dead panes are reflected in state
 - New sessions cause a new control-mode client to be started automatically
 - Observer restarts restore accurate current pane state without corrupting history
@@ -551,6 +616,7 @@ Acceptance criteria:
 - Implement class-specific heuristics for when a pane becomes interesting
 - Add idle-after-output thresholds where appropriate
 - Re-implement bell, activity, and silence as observer-driven heuristics instead of tmux alert semantics
+- Treat `OSC 9` as a high-confidence interesting signal in ranking and state transitions
 - Rank panes by `is_interesting`, `last_interest_at`, heuristic transition recency, and output recency
 
 Acceptance criteria:
@@ -558,6 +624,7 @@ Acceptance criteria:
 - Agent and batch panes become interesting after likely completion or meaningful state changes
 - Server and watch panes do not become false positives just because output stops
 - Bell and output-driven heuristic transitions are recorded without enabling tmux monitor alerts
+- `OSC 9` transitions are recorded and ranked as interesting
 - Ranked queries match the intended MRU behavior
 
 ### Phase 5: Jump and Selection UX
@@ -610,6 +677,8 @@ Acceptance criteria:
 Write a Phase 1 and Phase 2 implementation spec with:
 
 - exact tmux control-mode commands, per-session child-client lifecycle, and supervisor reconciliation behavior
+- exact normalization rules for `%output` and `%extended-output`, including octal decoding and per-pane stream buffering
+- exact ANSI and OSC parser state-machine behavior, including fragmented sequence handling and BEL versus ST termination
 - exact Rust CLI command names and wrapper invocation contract
 - exact SQLite initialization path
 - exact internal service boundaries between CLI wiring, event normalization, heuristics, and persistence

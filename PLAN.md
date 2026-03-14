@@ -6,6 +6,7 @@
 - Track panes as the primary unit of state
 - Support jumping directly to panes across windows and tmux sessions within the same tmux server
 - Prefer zero-integration observation in v1, meaning no required shell hooks and no required changes to programs running inside panes
+- Implement the core program in Rust and manage its installation separately from TPM
 - Persist state in SQLite for ranking, history, and recovery across detach and reattach
 
 ## Recommended Architecture
@@ -13,17 +14,21 @@
 Use an observer-based architecture for v1:
 
 - A thin tmux plugin layer in shell for TPM compatibility, key bindings, and process supervision
-- A long-lived helper that attaches to tmux in control mode and observes pane output and metadata changes
-- A process inspection layer that classifies what is running in each pane using tmux metadata plus OS process information
-- SQLite as the source of truth for event history and current pane state
+- A separately installed Rust CLI as the core program
+- A long-lived Rust observer that attaches to tmux in control mode and observes pane output and metadata changes
+- Rust-owned process inspection and heuristic evaluation using tmux metadata plus OS process information
+- SQLite, managed by the Rust CLI, as the source of truth for event history and current pane state
 
-This is a better fit than a hook-first design because it avoids depending on shell integration and gives a continuous pane-scoped view of output activity.
+This is a better fit than a hook-first design because it avoids depending on shell integration, keeps the TPM side minimal, and gives a stronger foundation for state management, process inspection, and ranking logic.
 
 ## Core Product Decisions
 
 - Primary tracked unit: pane
 - Secondary view: window, derived from the highest-ranked pane in that window
 - Default operating mode: zero-integration
+- Packaging model:
+  - TPM installs only shell wrappers and tmux bindings
+  - The Rust CLI is expected to already be installed and available on `PATH`
 - Supported signal families:
   - tmux control-mode output notifications such as `%output`
   - tmux pane metadata such as `pane_current_command`, `pane_pid`, `pane_tty`, `pane_title`, and pane location identifiers
@@ -38,9 +43,21 @@ This is a better fit than a hook-first design because it avoids depending on she
 - v1 should not depend on zsh or bash hooks
 - v1 should not require programs such as Codex, Claude, test runners, or dev servers to emit custom signals
 - v1 should not assume tmux can observe arbitrary macOS Notification Center notifications triggered by programs
+- v1 TPM installation should not be responsible for compiling or installing the Rust core binary
 - tmux-observable signals include pane output, bells, and tmux alerts; arbitrary desktop notifications do not appear to be a reliable tmux signal source
 
 Optional explicit program integration may still be added later as a higher-confidence hinting layer, but it should not be required for the base product.
+
+## Distribution Model
+
+Separate distribution concerns between the tmux plugin and the core executable:
+
+- The TPM-managed side should install a shell wrapper, tmux bindings, and minimal configuration glue
+- The wrapper should call the Rust CLI and fail clearly if the CLI is not installed
+- The Rust CLI should own the observer, SQLite schema and migrations, ranking logic, process inspection, and jump commands
+- The Rust CLI can be installed through a separate mechanism such as `cargo install`, a package manager, or prebuilt release artifacts
+
+This keeps TPM simple and avoids turning plugin installation into language-runtime or build-toolchain management.
 
 ## Jumping Model
 
@@ -125,7 +142,7 @@ This avoids the biggest false positive in a generic "silence means done" model: 
 
 ## Event Model
 
-All observer writes should emit a common JSON payload shape to a single recorder interface.
+All observer writes should emit a common JSON payload shape to a single recorder interface implemented inside the Rust CLI.
 
 Example payload:
 
@@ -351,7 +368,7 @@ This should support MRU-style switching through panes that have recently become 
 
 ## Proposed CLI Surface
 
-Keep tmux integration thin by routing all writes and reads through one CLI surface.
+Keep tmux integration thin by routing all writes and reads through one Rust CLI surface.
 
 Commands:
 
@@ -366,15 +383,18 @@ Commands:
 - `jump-next`
 - `cleanup-stale`
 
-The implementation language of this helper can change later without changing the surrounding tmux plugin contract.
+The TPM wrapper script should call these commands and should not duplicate application logic.
 
 ## Proposed Repository Layout
 
 ```text
 tmux-pane-switcher.tmux
 scripts/
-  pane-switcher
-  observer/
+  pane-switcher-wrapper
+rust/
+  tmux-pane-switcher/
+    Cargo.toml
+    src/
 sql/
   schema.sql
   queries.sql
@@ -391,8 +411,10 @@ test/
 ### Phase 1: Plugin Skeleton and Core Persistence
 
 - Add TPM-compatible `tmux-pane-switcher.tmux`
-- Add SQLite schema and initialization path
-- Add helper CLI with:
+- Add a shell wrapper that locates and invokes the Rust CLI
+- Add a Rust crate for the core CLI
+- Add SQLite schema and initialization path owned by the Rust CLI
+- Add Rust CLI commands for:
   - schema initialization
   - manual pane snapshot recording
   - ranking query
@@ -401,13 +423,14 @@ test/
 
 Acceptance criteria:
 
-- Plugin initializes its database
+- The wrapper can invoke the installed Rust CLI
+- The Rust CLI initializes its database
 - A manually inserted pane snapshot updates pane state
 - The plugin can query the top-ranked pane target
 
 ### Phase 2: Control-Mode Observer
 
-- Add a long-lived observer process that attaches to tmux in control mode
+- Add a long-lived Rust observer process that attaches to tmux in control mode
 - Ingest `%output` and related pane notifications
 - Reconcile pane metadata on startup and periodically
 - Persist output activity and pane lifecycle changes
@@ -467,13 +490,15 @@ Acceptance criteria:
 ### Phase 7: Documentation and Packaging
 
 - Document TPM installation
+- Document Rust CLI installation separately from TPM installation
 - Document observer lifecycle and expected limitations
 - Document configuration options and heuristic tuning
 
 Acceptance criteria:
 
-- A new user can install the plugin and run the observer from docs alone
+- A new user can install the Rust CLI, install the TPM wrapper, and run the observer from docs alone
 - The docs clearly explain the difference between tmux-observable alerts and arbitrary OS notifications
+- The docs clearly explain that TPM does not install the Rust binary
 
 ## Open Questions
 
@@ -489,7 +514,8 @@ Acceptance criteria:
 Write a Phase 1 and Phase 2 implementation spec with:
 
 - exact tmux control-mode commands and observer lifecycle
+- exact Rust CLI command names and wrapper invocation contract
 - exact SQLite initialization path
-- exact recorder CLI contract between the observer and the database layer
+- exact recorder CLI contract inside the Rust program
 - the initial classification table and heuristic rules
 - acceptance tests for pane snapshots, output ingestion, ranking, and pane jumps

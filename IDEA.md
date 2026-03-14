@@ -5,6 +5,7 @@
 - A tmux pane/window switcher that observes panes and ranks the ones that are currently or recently "interesting"
 - It should let the user jump back to panes in most recently used order when those panes are doing useful work or have likely changed state
 - The goal is to make it easy to come back to a pane where the user started an async or semi-async thing across sessions, while also giving visibility into that work
+- The core implementation should live in a separately installed Rust CLI, while the TPM-managed plugin should stay a thin shell wrapper that calls that CLI
 
 Examples of panes that may become interesting:
 
@@ -19,6 +20,12 @@ The key idea is to use heuristics instead of relying primarily on tmux hooks or 
 - Classify the foreground program or process tree in each pane
 - Use heuristics to decide when a pane becomes interesting
 - Rank interesting panes by recency so the user can switch through them quickly
+
+Architecture direction:
+
+- TPM should install only the tmux-facing wrapper script and config glue
+- The Rust CLI should own observation, state management, ranking, and jump logic
+- Installing or upgrading the Rust program should be managed separately from TPM
 
 Important limitation:
 

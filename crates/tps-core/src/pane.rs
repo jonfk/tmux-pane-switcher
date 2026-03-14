@@ -77,10 +77,7 @@ pub struct RankedPane {
 
 impl RankedPane {
     pub fn tmux_target(&self) -> String {
-        format!(
-            "{}:{}:{}",
-            self.target.session_id, self.target.window_id, self.target.pane_id
-        )
+        self.target.pane_id.clone()
     }
 }
 

@@ -15,9 +15,10 @@ Use an observer-based architecture for v1:
 
 - A thin tmux plugin layer in shell for TPM compatibility, key bindings, and process supervision
 - A separately installed Rust CLI as the core program
+- A Rust workspace with clear internal boundaries between CLI wiring, core domain logic, tmux integration, process inspection, and SQLite storage
 - A long-lived Rust observer that attaches to tmux in control mode and observes pane output and metadata changes
 - Rust-owned process inspection and heuristic evaluation using tmux metadata plus OS process information
-- SQLite, managed by the Rust CLI, as the source of truth for event history and current pane state
+- SQLite, managed by the Rust CLI, as the source of truth for event history and current pane state shared across commands
 
 This is a better fit than a hook-first design because it avoids depending on shell integration, keeps the TPM side minimal, and gives a stronger foundation for state management, process inspection, and ranking logic.
 
@@ -55,6 +56,7 @@ Separate distribution concerns between the tmux plugin and the core executable:
 - The TPM-managed side should install a shell wrapper, tmux bindings, and minimal configuration glue
 - The wrapper should call the Rust CLI and fail clearly if the CLI is not installed
 - The Rust CLI should own the observer, SQLite schema and migrations, ranking logic, process inspection, and jump commands
+- Internal integration inside the Rust program should happen through in-process modules or crates, not through shell-level command chaining
 - The Rust CLI can be installed through a separate mechanism such as `cargo install`, a package manager, or prebuilt release artifacts
 
 This keeps TPM simple and avoids turning plugin installation into language-runtime or build-toolchain management.
@@ -142,7 +144,7 @@ This avoids the biggest false positive in a generic "silence means done" model: 
 
 ## Event Model
 
-All observer writes should emit a common JSON payload shape to a single recorder interface implemented inside the Rust CLI.
+All observer and reconciliation paths should normalize their inputs to a common event shape handled by internal Rust services.
 
 Example payload:
 
@@ -368,42 +370,95 @@ This should support MRU-style switching through panes that have recently become 
 
 ## Proposed CLI Surface
 
-Keep tmux integration thin by routing all writes and reads through one Rust CLI surface.
+Keep tmux integration thin by exposing a small Rust CLI surface for top-level operations while keeping event recording, classification, and heuristic evaluation inside internal Rust services.
 
 Commands:
 
 - `observe`
 - `snapshot-panes`
-- `record-output`
-- `record-alert`
-- `classify-pane`
-- `evaluate-heuristics`
 - `list-ranked`
 - `jump-top`
 - `jump-next`
-- `cleanup-stale`
+- `reconcile`
+- `doctor`
 
 The TPM wrapper script should call these commands and should not duplicate application logic.
 
 ## Proposed Repository Layout
 
 ```text
+Cargo.toml
+Cargo.lock
+README.md
 tmux-pane-switcher.tmux
+
 scripts/
   pane-switcher-wrapper
-rust/
-  tmux-pane-switcher/
-    Cargo.toml
+  pane-switcher-observer
+
+crates/
+  tps-cli/
     src/
+      main.rs
+      commands/
+        observe.rs
+        list_ranked.rs
+        jump.rs
+        reconcile.rs
+        doctor.rs
+  tps-core/
+    src/
+      event.rs
+      pane.rs
+      pane_state.rs
+      process_class.rs
+      classifier.rs
+      heuristics.rs
+      ranking.rs
+      jump.rs
+      reconcile.rs
+      ports.rs
+  tps-tmux/
+    src/
+      control_client.rs
+      control_parser.rs
+      snapshot.rs
+      commands.rs
+      ids.rs
+  tps-store/
+    src/
+      db.rs
+      migrations.rs
+      event_repo.rs
+      pane_repo.rs
+      ranking_repo.rs
+  tps-process/
+    src/
+      inspector.rs
+      macos.rs
+      process_tree.rs
+
 sql/
-  schema.sql
-  queries.sql
+  0001_init.sql
+  0002_indexes.sql
+
 docs/
+  architecture.md
   installation.md
   configuration.md
   heuristics.md
-test/
+  process-classification.md
+  observer-lifecycle.md
+
+tests/
+  integration/
+    observe_flow.rs
+    ranking_flow.rs
+    jump_flow.rs
   fixtures/
+    control_mode/
+    process_trees/
+    sqlite/
 ```
 
 ## Implementation Phases
@@ -412,11 +467,10 @@ test/
 
 - Add TPM-compatible `tmux-pane-switcher.tmux`
 - Add a shell wrapper that locates and invokes the Rust CLI
-- Add a Rust crate for the core CLI
-- Add SQLite schema and initialization path owned by the Rust CLI
+- Add a Rust workspace with initial crates for CLI wiring, core logic, tmux integration, storage, and process inspection
+- Add SQLite schema and initialization path owned by the Rust CLI, with automatic startup initialization for commands that require the database
 - Add Rust CLI commands for:
-  - schema initialization
-  - manual pane snapshot recording
+  - pane snapshot collection
   - ranking query
   - jump-to-pane query output
 - Add minimal tmux command bindings
@@ -516,6 +570,6 @@ Write a Phase 1 and Phase 2 implementation spec with:
 - exact tmux control-mode commands and observer lifecycle
 - exact Rust CLI command names and wrapper invocation contract
 - exact SQLite initialization path
-- exact recorder CLI contract inside the Rust program
+- exact internal service boundaries between CLI wiring, event normalization, heuristics, and persistence
 - the initial classification table and heuristic rules
 - acceptance tests for pane snapshots, output ingestion, ranking, and pane jumps

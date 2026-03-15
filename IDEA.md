@@ -24,7 +24,7 @@ The key idea is to use heuristics instead of relying primarily on tmux hooks or 
 Architecture direction:
 
 - TPM should install only the tmux-facing wrapper script and config glue
-- The Rust CLI should own observation, state management, ranking, and jump logic
+- The Rust CLI should own observation, state management, ranking, and jump target resolution, while the tmux wrapper performs the client jump
 - Installing or upgrading the Rust program should be managed separately from TPM
 
 Important limitation:

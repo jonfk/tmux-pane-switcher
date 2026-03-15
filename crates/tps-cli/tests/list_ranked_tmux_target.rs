@@ -1,0 +1,243 @@
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use tps_core::{PaneSnapshot, server_instance_key};
+use tps_store::Store;
+
+const TEST_SOCKET_PATH: &str = "/tmp/test-tmux.sock";
+const TEST_SERVER_START_TIME: i64 = 1773537318;
+static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn list_ranked_outputs_valid_tmux_pane_targets() {
+    let db_path = temp_db_path();
+    let server_key = test_server_key();
+    let mut store = Store::open(&db_path).expect("open store");
+    store
+        .upsert_snapshots(&[
+            snapshot(TEST_SOCKET_PATH, "%1", "@1", 0, Some(10), false),
+            snapshot(TEST_SOCKET_PATH, "%2", "@2", 1, Some(99), true),
+        ])
+        .expect("upsert snapshots");
+
+    let tmux_target_output = run_cli(
+        &db_path,
+        &[
+            "list-ranked",
+            "--server-key",
+            &server_key,
+            "--format",
+            "tmux-target",
+            "--limit",
+            "2",
+        ],
+    );
+    assert_eq!(tmux_target_output, "%2\n%1\n");
+
+    let table_output = run_cli(
+        &db_path,
+        &[
+            "list-ranked",
+            "--server-key",
+            &server_key,
+            "--format",
+            "table",
+            "--limit",
+            "2",
+        ],
+    );
+    let first_column: Vec<&str> = table_output
+        .lines()
+        .map(|line| {
+            line.split('\t')
+                .next()
+                .expect("table row has target column")
+        })
+        .collect();
+    assert_eq!(first_column, vec!["%2", "%1"]);
+
+    let jump_target_output = run_cli(
+        &db_path,
+        &[
+            "list-ranked",
+            "--server-key",
+            &server_key,
+            "--format",
+            "jump-target",
+            "--limit",
+            "2",
+        ],
+    );
+    assert_eq!(
+        jump_target_output,
+        "/tmp/test-tmux.sock\t$1\t@2\t%2\n/tmp/test-tmux.sock\t$1\t@1\t%1\n"
+    );
+
+    let picker_output = run_cli(
+        &db_path,
+        &[
+            "list-ranked",
+            "--server-key",
+            &server_key,
+            "--format",
+            "picker",
+            "--limit",
+            "2",
+        ],
+    );
+    assert_eq!(
+        picker_output,
+        "/tmp/test-tmux.sock\t$1\t@2\t%2\tzsh\twork:1.0\twindow-1\tpane-%2\n\
+/tmp/test-tmux.sock\t$1\t@1\t%1\tzsh\twork:0.0\twindow-0\tpane-%1\n"
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn list_ranked_escapes_multiline_metadata_for_table_and_picker() {
+    let db_path = temp_db_path();
+    let server_key = test_server_key();
+    let mut store = Store::open(&db_path).expect("open store");
+    let mut pane = snapshot(TEST_SOCKET_PATH, "%1", "@1", 0, Some(10), true);
+    pane.session_name = "work\nsession".to_string();
+    pane.window_name = "window\t1".to_string();
+    pane.pane_title = "line1\nline2\t\\\\done".to_string();
+    pane.pane_current_command = "zsh\t-l".to_string();
+    store.upsert_snapshots(&[pane]).expect("upsert snapshots");
+
+    let table_output = run_cli(
+        &db_path,
+        &[
+            "list-ranked",
+            "--server-key",
+            &server_key,
+            "--format",
+            "table",
+            "--limit",
+            "1",
+        ],
+    );
+    assert_eq!(
+        table_output,
+        "%1\tzsh\\t-l\t0.0\twork\\nsession\twindow\\t1\tline1\\nline2\\t\\\\\\\\done\n"
+    );
+
+    let picker_output = run_cli(
+        &db_path,
+        &[
+            "list-ranked",
+            "--server-key",
+            &server_key,
+            "--format",
+            "picker",
+            "--limit",
+            "1",
+        ],
+    );
+    assert_eq!(
+        picker_output,
+        "/tmp/test-tmux.sock\t$1\t@1\t%1\tzsh\\t-l\twork\\nsession:0.0\twindow\\t1\tline1\\nline2\\t\\\\\\\\done\n"
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+fn run_cli(db_path: &Path, args: &[&str]) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_tmux-pane-switcher"))
+        .arg("--db-path")
+        .arg(db_path)
+        .args(args)
+        .output()
+        .expect("run tmux-pane-switcher");
+
+    assert!(
+        output.status.success(),
+        "command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    String::from_utf8(output.stdout).expect("stdout is utf-8")
+}
+
+fn snapshot(
+    socket_path: &str,
+    pane_id: &str,
+    window_id: &str,
+    window_index: i64,
+    window_activity: Option<i64>,
+    active: bool,
+) -> PaneSnapshot {
+    snapshot_with_ids(SnapshotIds {
+        socket_path,
+        session_id: "$1",
+        window_id,
+        window_index,
+        pane_id,
+        pane_index: 0,
+        window_activity,
+        active,
+    })
+}
+
+struct SnapshotIds<'a> {
+    socket_path: &'a str,
+    session_id: &'a str,
+    window_id: &'a str,
+    window_index: i64,
+    pane_id: &'a str,
+    pane_index: i64,
+    window_activity: Option<i64>,
+    active: bool,
+}
+
+fn snapshot_with_ids(ids: SnapshotIds<'_>) -> PaneSnapshot {
+    let SnapshotIds {
+        socket_path,
+        session_id,
+        window_id,
+        window_index,
+        pane_id,
+        pane_index,
+        window_activity,
+        active,
+    } = ids;
+    PaneSnapshot {
+        server_key: server_instance_key(socket_path, TEST_SERVER_START_TIME),
+        socket_path: socket_path.to_string(),
+        server_start_time: TEST_SERVER_START_TIME,
+        session_id: session_id.to_string(),
+        session_name: "work".to_string(),
+        window_id: window_id.to_string(),
+        window_index,
+        window_name: format!("window-{window_index}"),
+        window_activity,
+        window_active: active,
+        pane_id: pane_id.to_string(),
+        pane_index,
+        pane_pid: Some(1000 + pane_index),
+        pane_current_command: "zsh".to_string(),
+        pane_current_path: "/tmp".to_string(),
+        pane_title: format!("pane-{pane_id}"),
+        pane_active: active,
+        pane_dead: false,
+        observed_at: "100.000Z".to_string(),
+    }
+}
+
+fn test_server_key() -> String {
+    server_instance_key(TEST_SOCKET_PATH, TEST_SERVER_START_TIME)
+}
+
+fn temp_db_path() -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock before unix epoch")
+        .as_nanos();
+    let counter = TEST_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "tmux-pane-switcher-cli-test-{unique}-{counter}.sqlite"
+    ))
+}

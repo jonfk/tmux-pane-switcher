@@ -24,8 +24,19 @@ def main() -> int:
         with ControlModeClient(server, "alpha") as client:
             created_pane = server.split_window("alpha:0.0", command=server.shell())
             time.sleep(0.25)
+            split_notifications = client.notifications(client.drain_lines(timeout=2.0))
+            assert_true(
+                any(line.startswith(f"%layout-change {alpha_window} ") for line in split_notifications),
+                "expected %layout-change after pane split",
+            )
+
             server.cmd("kill-pane", "-t", created_pane)
             time.sleep(0.25)
+            kill_notifications = client.notifications(client.drain_lines(timeout=2.0))
+            assert_true(
+                any(line.startswith(f"%layout-change {alpha_window} ") for line in kill_notifications),
+                "expected %layout-change after kill-pane",
+            )
 
             server.new_session("beta", command=server.shell())
             time.sleep(0.25)
@@ -40,12 +51,11 @@ def main() -> int:
                 description="dead pane with remain-on-exit",
             )
 
-            notifications = client.notifications(client.drain_lines(timeout=2.0))
-
-            assert_true(
-                any(line.startswith(f"%layout-change {alpha_window} ") for line in notifications),
-                "expected %layout-change during pane split or kill",
-            )
+            notifications = [
+                *split_notifications,
+                *kill_notifications,
+                *client.notifications(client.drain_lines(timeout=2.0)),
+            ]
             assert_true(
                 notifications.count("%sessions-changed") >= 2,
                 "expected %sessions-changed for session create and destroy",
@@ -79,4 +89,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

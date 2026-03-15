@@ -59,7 +59,7 @@ Separate distribution concerns between the tmux plugin and the core executable:
 
 - The TPM-managed side should install a shell wrapper, tmux bindings, and minimal configuration glue
 - The wrapper should call the Rust CLI and fail clearly if the CLI is not installed
-- The Rust CLI should own the observer, SQLite schema and migrations, ranking logic, process inspection, and jump commands
+- The Rust CLI should own the observer, SQLite schema and migrations, ranking logic, process inspection, and jump target resolution
 - Internal integration inside the Rust program should happen through in-process modules or crates, not through shell-level command chaining
 - The Rust CLI can be installed through a separate mechanism such as `cargo install`, a package manager, or prebuilt release artifacts
 
@@ -76,9 +76,10 @@ To jump to a pane, the plugin must retain:
 
 Jump flow:
 
-1. Switch client to the pane's session.
-2. Select the pane's window.
-3. Select the target pane.
+1. Resolve the target pane identity from the ranked pane list.
+2. Switch client to the pane's session.
+3. Select the pane's window.
+4. Select the target pane.
 
 This works across windows and tmux sessions as long as the tmux server is still alive. Pane IDs do not survive a tmux server restart, so persisted state after a restart is useful for history but not for direct jumps to the original pane.
 

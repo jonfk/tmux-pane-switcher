@@ -1,0 +1,15 @@
+[package]
+name = "tps-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "tmux-pane-switcher"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+tps-core = { version = "0.1.0", path = "../tps-core" }
+tps-store = { version = "0.1.0", path = "../tps-store" }
+tps-tmux = { version = "0.1.0", path = "../tps-tmux" }

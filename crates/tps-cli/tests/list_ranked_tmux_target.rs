@@ -76,26 +76,26 @@ fn tmux_target_output_can_be_used_with_select_pane() {
     let mut store = Store::open(&db_path).expect("open store");
     store
         .upsert_snapshots(&[
-            snapshot_with_ids(
-                &server_key,
-                &session_id,
-                &window_id,
-                0,
-                &pane_one,
-                0,
-                Some(10),
-                false,
-            ),
-            snapshot_with_ids(
-                &server_key,
-                &session_id,
-                &window_id,
-                0,
-                &pane_two,
-                1,
-                Some(99),
-                true,
-            ),
+            snapshot_with_ids(SnapshotIds {
+                server_key: &server_key,
+                session_id: &session_id,
+                window_id: &window_id,
+                window_index: 0,
+                pane_id: &pane_one,
+                pane_index: 0,
+                window_activity: Some(10),
+                active: false,
+            }),
+            snapshot_with_ids(SnapshotIds {
+                server_key: &server_key,
+                session_id: &session_id,
+                window_id: &window_id,
+                window_index: 0,
+                pane_id: &pane_two,
+                pane_index: 1,
+                window_activity: Some(99),
+                active: true,
+            }),
         ])
         .expect("upsert snapshots");
 
@@ -145,28 +145,40 @@ fn snapshot(
     window_activity: Option<i64>,
     active: bool,
 ) -> PaneSnapshot {
-    snapshot_with_ids(
+    snapshot_with_ids(SnapshotIds {
         server_key,
-        "$1",
+        session_id: "$1",
         window_id,
         window_index,
         pane_id,
-        0,
+        pane_index: 0,
         window_activity,
         active,
-    )
+    })
 }
 
-fn snapshot_with_ids(
-    server_key: &str,
-    session_id: &str,
-    window_id: &str,
+struct SnapshotIds<'a> {
+    server_key: &'a str,
+    session_id: &'a str,
+    window_id: &'a str,
     window_index: i64,
-    pane_id: &str,
+    pane_id: &'a str,
     pane_index: i64,
     window_activity: Option<i64>,
     active: bool,
-) -> PaneSnapshot {
+}
+
+fn snapshot_with_ids(ids: SnapshotIds<'_>) -> PaneSnapshot {
+    let SnapshotIds {
+        server_key,
+        session_id,
+        window_id,
+        window_index,
+        pane_id,
+        pane_index,
+        window_activity,
+        active,
+    } = ids;
     PaneSnapshot {
         server_key: server_key.to_string(),
         session_id: session_id.to_string(),

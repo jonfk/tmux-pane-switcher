@@ -132,7 +132,7 @@ fn snapshot_format() -> String {
         .join("\t")
 }
 
-fn parse_snapshot_output<'a>(mut output: &'a str, observed_at: &str) -> Result<Vec<PaneSnapshot>> {
+fn parse_snapshot_output(mut output: &str, observed_at: &str) -> Result<Vec<PaneSnapshot>> {
     let mut snapshots = Vec::new();
 
     while !output.is_empty() {

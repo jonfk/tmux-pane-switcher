@@ -24,6 +24,10 @@ shell_join() {
   printf '%s' "${joined% }"
 }
 
+decode_picker_field() {
+  printf '%b' "$1"
+}
+
 jump_to_target() {
   local server_key="$1"
   local session_id="$2"
@@ -61,19 +65,13 @@ run_jump_picker() {
     exit 1
   fi
 
-  local table_output
-  if ! table_output="$("${cli_bin}" list-ranked --limit "${jump_limit}" --format table "$@" 2>&1)"; then
-    tmux display-message "${table_output}"
+  local picker_output
+  if ! picker_output="$("${cli_bin}" list-ranked --limit "${jump_limit}" --format picker "$@" 2>&1)"; then
+    tmux display-message "${picker_output}"
     exit 1
   fi
 
-  local jump_output
-  if ! jump_output="$("${cli_bin}" list-ranked --limit "${jump_limit}" --format jump-target "$@" 2>&1)"; then
-    tmux display-message "${jump_output}"
-    exit 1
-  fi
-
-  if [[ -z "${table_output}" || -z "${jump_output}" ]]; then
+  if [[ -z "${picker_output}" ]]; then
     tmux display-message "No ranked tmux pane available"
     exit 1
   fi
@@ -82,19 +80,7 @@ run_jump_picker() {
   if ! selection="$(
     {
       printf '\t\t\t\tCommand\tSession:Pane\tWindow\tTitle\n'
-      paste <(printf '%s\n' "${jump_output}") <(printf '%s\n' "${table_output}") | while IFS=$'\t' read -r server_key session_id window_id pane_id _ command window_pane session_name window_name display_title; do
-        [[ -n "${pane_id}" ]] || continue
-        printf '%s\t%s\t%s\t%s\t%s\t%s:%s\t%s\t%s\n' \
-          "${server_key}" \
-          "${session_id}" \
-          "${window_id}" \
-          "${pane_id}" \
-          "${command}" \
-          "${session_name}" \
-          "${window_pane}" \
-          "${window_name}" \
-          "${display_title}"
-      done
+      printf '%s\n' "${picker_output}"
     } | fzf \
       --delimiter=$'\t' \
       --with-nth=5.. \
@@ -109,7 +95,11 @@ run_jump_picker() {
 
   local server_key session_id window_id pane_id
   IFS=$'\t' read -r server_key session_id window_id pane_id _ <<< "${selection}"
-  jump_to_target "${server_key}" "${session_id}" "${window_id}" "${pane_id}"
+  jump_to_target \
+    "$(decode_picker_field "${server_key}")" \
+    "$(decode_picker_field "${session_id}")" \
+    "$(decode_picker_field "${window_id}")" \
+    "$(decode_picker_field "${pane_id}")"
 }
 
 if [[ $# -gt 0 && "$1" == "jump" ]]; then

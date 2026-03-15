@@ -70,6 +70,73 @@ fn list_ranked_outputs_valid_tmux_pane_targets() {
         "/tmp/test-tmux.sock\t$1\t@2\t%2\n/tmp/test-tmux.sock\t$1\t@1\t%1\n"
     );
 
+    let picker_output = run_cli(
+        &db_path,
+        &[
+            "list-ranked",
+            "--server-key",
+            server_key,
+            "--format",
+            "picker",
+            "--limit",
+            "2",
+        ],
+    );
+    assert_eq!(
+        picker_output,
+        "/tmp/test-tmux.sock\t$1\t@2\t%2\tzsh\twork:1.0\twindow-1\tpane-%2\n\
+/tmp/test-tmux.sock\t$1\t@1\t%1\tzsh\twork:0.0\twindow-0\tpane-%1\n"
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn list_ranked_escapes_multiline_metadata_for_table_and_picker() {
+    let db_path = temp_db_path();
+    let server_key = "/tmp/test-tmux.sock";
+    let mut store = Store::open(&db_path).expect("open store");
+    let mut pane = snapshot(server_key, "%1", "@1", 0, Some(10), true);
+    pane.session_name = "work\nsession".to_string();
+    pane.window_name = "window\t1".to_string();
+    pane.pane_title = "line1\nline2\t\\\\done".to_string();
+    pane.pane_current_command = "zsh\t-l".to_string();
+    store.upsert_snapshots(&[pane]).expect("upsert snapshots");
+
+    let table_output = run_cli(
+        &db_path,
+        &[
+            "list-ranked",
+            "--server-key",
+            server_key,
+            "--format",
+            "table",
+            "--limit",
+            "1",
+        ],
+    );
+    assert_eq!(
+        table_output,
+        "%1\tzsh\\t-l\t0.0\twork\\nsession\twindow\\t1\tline1\\nline2\\t\\\\\\\\done\n"
+    );
+
+    let picker_output = run_cli(
+        &db_path,
+        &[
+            "list-ranked",
+            "--server-key",
+            server_key,
+            "--format",
+            "picker",
+            "--limit",
+            "1",
+        ],
+    );
+    assert_eq!(
+        picker_output,
+        "/tmp/test-tmux.sock\t$1\t@1\t%1\tzsh\\t-l\twork\\nsession:0.0\twindow\\t1\tline1\\nline2\\t\\\\\\\\done\n"
+    );
+
     let _ = std::fs::remove_file(db_path);
 }
 

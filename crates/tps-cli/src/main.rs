@@ -36,6 +36,7 @@ enum OutputFormat {
     Table,
     TmuxTarget,
     JumpTarget,
+    Picker,
 }
 
 fn main() {
@@ -84,6 +85,7 @@ fn run() -> Result<()> {
                         );
                     }
                 }
+                OutputFormat::Picker => print_ranked_picker(&panes),
             }
         }
         Commands::Doctor => {
@@ -108,15 +110,47 @@ fn print_ranked_table(panes: &[tps_core::RankedPane]) {
     for pane in panes {
         println!(
             "{}\t{}\t{}.{}\t{}\t{}\t{}",
-            pane.tmux_target(),
-            pane.current_command,
+            escape_tsv_field(&pane.tmux_target()),
+            escape_tsv_field(&pane.current_command),
             pane.window_index,
             pane.pane_index,
-            pane.session_name,
-            pane.window_name,
-            pane.display_title
+            escape_tsv_field(&pane.session_name),
+            escape_tsv_field(&pane.window_name),
+            escape_tsv_field(&pane.display_title)
         );
     }
+}
+
+fn print_ranked_picker(panes: &[tps_core::RankedPane]) {
+    for pane in panes {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}:{}.{}\t{}\t{}",
+            escape_tsv_field(&pane.target.server_key),
+            escape_tsv_field(&pane.target.session_id),
+            escape_tsv_field(&pane.target.window_id),
+            escape_tsv_field(&pane.target.pane_id),
+            escape_tsv_field(&pane.current_command),
+            escape_tsv_field(&pane.session_name),
+            pane.window_index,
+            pane.pane_index,
+            escape_tsv_field(&pane.window_name),
+            escape_tsv_field(&pane.display_title)
+        );
+    }
+}
+
+fn escape_tsv_field(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '\t' => escaped.push_str("\\t"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 fn resolve_server_key(server_key: Option<String>, tmux: &TmuxClient) -> Result<String> {

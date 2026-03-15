@@ -22,10 +22,11 @@ def collect_until_output(
     pane_id: str,
     predicate,
     timeout: float,
-) -> tuple[list[str], list]:
+) -> tuple[list[str], list, bool]:
     deadline = time.monotonic() + timeout
     notifications: list[str] = []
     outputs = []
+    pause_seen = False
 
     while time.monotonic() < deadline:
         remaining = max(deadline - time.monotonic(), 0.0)
@@ -38,15 +39,32 @@ def collect_until_output(
             if event is not None:
                 outputs.append(event)
             if line == f"%pause {pane_id}":
+                pause_seen = True
                 client.command_output(f"refresh-client -A {pane_id}:continue")
-        if predicate(outputs):
-            return notifications, outputs
+        if predicate(outputs, pause_seen):
+            return notifications, outputs, pause_seen
 
-    return notifications, outputs
+    return notifications, outputs, pause_seen
 
 
 def shell_command(script: str) -> str:
     return f"sh -lc {shlex.quote(script)}"
+
+
+def print_notification_batch(lines: list[str], edge_items: int = 20) -> None:
+    if len(lines) <= edge_items * 2:
+        for line in lines:
+            print(f"  {line}")
+        return
+
+    for line in lines[:edge_items]:
+        print(f"  {line}")
+
+    omitted = len(lines) - (edge_items * 2)
+    print(f"  ... {omitted} notifications omitted ...")
+
+    for line in lines[-edge_items:]:
+        print(f"  {line}")
 
 
 def main() -> int:
@@ -61,10 +79,10 @@ def main() -> int:
                 "alpha:0.0",
                 command=shell_command(f"printf '{plain_marker}\\n'; sleep 0.2"),
             )
-            first_batch, first_outputs = collect_until_output(
+            _, first_outputs, _ = collect_until_output(
                 client,
                 plain_pane,
-                lambda events: any(
+                lambda events, _pause_seen: any(
                     event.kind == "%output"
                     and event.pane_id == plain_pane
                     and plain_marker.encode() in event.payload
@@ -78,25 +96,26 @@ def main() -> int:
                 "expected %output notification before pause-after was enabled",
             )
 
-            client.command_output("refresh-client -f pause-after=0.050")
+            client.command_output("refresh-client -f pause-after=0.010")
             client.notifications(client.drain_lines(timeout=0.3, quiet_period=0.05))
 
             extended_pane = server.split_window(
                 "alpha:0.0",
                 command=shell_command(
-                    f"printf '{extended_marker}\\n'; yes '{extended_marker}-burst' | head -n 200"
+                    f"printf '{extended_marker}\\n'; yes '{extended_marker}-burst' | head -n 5000"
                 ),
             )
-            second_batch, second_outputs = collect_until_output(
+            second_batch, second_outputs, pause_seen = collect_until_output(
                 client,
                 extended_pane,
-                lambda events: any(
+                lambda events, pause_seen: pause_seen
+                and any(
                     event.kind == "%extended-output"
                     and event.pane_id == extended_pane
                     and extended_marker.encode() in event.payload
                     for event in events
                 ),
-                timeout=4.0,
+                timeout=8.0,
             )
 
             extended_events = [
@@ -113,6 +132,10 @@ def main() -> int:
                 all(event.age_ms is not None for event in extended_events),
                 "expected age metadata on %extended-output notifications",
             )
+            assert_true(
+                pause_seen,
+                "expected buffered output to trigger %pause after pause-after was enabled",
+            )
 
             print("PASS validate_output_notifications")
             print(f"plain_pane_id={plain_pane}")
@@ -121,9 +144,9 @@ def main() -> int:
                 f"plain_output_events={sum(event.kind == '%output' and event.pane_id == plain_pane for event in first_outputs)}"
             )
             print(f"extended_output_events={len(extended_events)}")
+            print(f"pause_seen={pause_seen}")
             print("observed_notifications=")
-            for line in second_batch:
-                print(f"  {line}")
+            print_notification_batch(second_batch)
 
     return 0
 

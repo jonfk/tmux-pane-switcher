@@ -36,7 +36,7 @@ It checks that:
 - the same client does not receive pane output from another session
 - server-wide notifications such as `%sessions-changed` are still visible
 
-This script is important for validating the plan’s assumption that one control-mode client is needed per tmux session for pane-output observation.
+This script is important for validating the assumption that, if pane-output observation is implemented via control mode, one control-mode client is needed per tmux session for our needs.
 
 ### `validate_output_notifications.py`
 

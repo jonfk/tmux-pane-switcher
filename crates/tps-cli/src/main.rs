@@ -78,7 +78,7 @@ fn run() -> Result<()> {
                     for pane in panes {
                         println!(
                             "{}\t{}\t{}\t{}",
-                            pane.target.server_key,
+                            pane.target.socket_path,
                             pane.target.session_id,
                             pane.target.window_id,
                             pane.target.pane_id
@@ -125,7 +125,7 @@ fn print_ranked_picker(panes: &[tps_core::RankedPane]) {
     for pane in panes {
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}:{}.{}\t{}\t{}",
-            escape_tsv_field(&pane.target.server_key),
+            escape_tsv_field(&pane.target.socket_path),
             escape_tsv_field(&pane.target.session_id),
             escape_tsv_field(&pane.target.window_id),
             escape_tsv_field(&pane.target.pane_id),

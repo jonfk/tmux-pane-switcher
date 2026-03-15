@@ -3,6 +3,8 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS servers (
   id INTEGER PRIMARY KEY,
   server_key TEXT NOT NULL UNIQUE,
+  socket_path TEXT NOT NULL,
+  start_time INTEGER NOT NULL,
   created_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL
 );

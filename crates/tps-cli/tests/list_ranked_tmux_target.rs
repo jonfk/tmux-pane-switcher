@@ -1,19 +1,24 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tps_core::PaneSnapshot;
+use tps_core::{PaneSnapshot, server_instance_key};
 use tps_store::Store;
+
+const TEST_SOCKET_PATH: &str = "/tmp/test-tmux.sock";
+const TEST_SERVER_START_TIME: i64 = 1773537318;
+static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn list_ranked_outputs_valid_tmux_pane_targets() {
     let db_path = temp_db_path();
-    let server_key = "/tmp/test-tmux.sock";
+    let server_key = test_server_key();
     let mut store = Store::open(&db_path).expect("open store");
     store
         .upsert_snapshots(&[
-            snapshot(server_key, "%1", "@1", 0, Some(10), false),
-            snapshot(server_key, "%2", "@2", 1, Some(99), true),
+            snapshot(TEST_SOCKET_PATH, "%1", "@1", 0, Some(10), false),
+            snapshot(TEST_SOCKET_PATH, "%2", "@2", 1, Some(99), true),
         ])
         .expect("upsert snapshots");
 
@@ -22,7 +27,7 @@ fn list_ranked_outputs_valid_tmux_pane_targets() {
         &[
             "list-ranked",
             "--server-key",
-            server_key,
+            &server_key,
             "--format",
             "tmux-target",
             "--limit",
@@ -36,7 +41,7 @@ fn list_ranked_outputs_valid_tmux_pane_targets() {
         &[
             "list-ranked",
             "--server-key",
-            server_key,
+            &server_key,
             "--format",
             "table",
             "--limit",
@@ -58,7 +63,7 @@ fn list_ranked_outputs_valid_tmux_pane_targets() {
         &[
             "list-ranked",
             "--server-key",
-            server_key,
+            &server_key,
             "--format",
             "jump-target",
             "--limit",
@@ -75,7 +80,7 @@ fn list_ranked_outputs_valid_tmux_pane_targets() {
         &[
             "list-ranked",
             "--server-key",
-            server_key,
+            &server_key,
             "--format",
             "picker",
             "--limit",
@@ -94,9 +99,9 @@ fn list_ranked_outputs_valid_tmux_pane_targets() {
 #[test]
 fn list_ranked_escapes_multiline_metadata_for_table_and_picker() {
     let db_path = temp_db_path();
-    let server_key = "/tmp/test-tmux.sock";
+    let server_key = test_server_key();
     let mut store = Store::open(&db_path).expect("open store");
-    let mut pane = snapshot(server_key, "%1", "@1", 0, Some(10), true);
+    let mut pane = snapshot(TEST_SOCKET_PATH, "%1", "@1", 0, Some(10), true);
     pane.session_name = "work\nsession".to_string();
     pane.window_name = "window\t1".to_string();
     pane.pane_title = "line1\nline2\t\\\\done".to_string();
@@ -108,7 +113,7 @@ fn list_ranked_escapes_multiline_metadata_for_table_and_picker() {
         &[
             "list-ranked",
             "--server-key",
-            server_key,
+            &server_key,
             "--format",
             "table",
             "--limit",
@@ -125,7 +130,7 @@ fn list_ranked_escapes_multiline_metadata_for_table_and_picker() {
         &[
             "list-ranked",
             "--server-key",
-            server_key,
+            &server_key,
             "--format",
             "picker",
             "--limit",
@@ -158,7 +163,7 @@ fn run_cli(db_path: &Path, args: &[&str]) -> String {
 }
 
 fn snapshot(
-    server_key: &str,
+    socket_path: &str,
     pane_id: &str,
     window_id: &str,
     window_index: i64,
@@ -166,7 +171,7 @@ fn snapshot(
     active: bool,
 ) -> PaneSnapshot {
     snapshot_with_ids(SnapshotIds {
-        server_key,
+        socket_path,
         session_id: "$1",
         window_id,
         window_index,
@@ -178,7 +183,7 @@ fn snapshot(
 }
 
 struct SnapshotIds<'a> {
-    server_key: &'a str,
+    socket_path: &'a str,
     session_id: &'a str,
     window_id: &'a str,
     window_index: i64,
@@ -190,7 +195,7 @@ struct SnapshotIds<'a> {
 
 fn snapshot_with_ids(ids: SnapshotIds<'_>) -> PaneSnapshot {
     let SnapshotIds {
-        server_key,
+        socket_path,
         session_id,
         window_id,
         window_index,
@@ -200,7 +205,9 @@ fn snapshot_with_ids(ids: SnapshotIds<'_>) -> PaneSnapshot {
         active,
     } = ids;
     PaneSnapshot {
-        server_key: server_key.to_string(),
+        server_key: server_instance_key(socket_path, TEST_SERVER_START_TIME),
+        socket_path: socket_path.to_string(),
+        server_start_time: TEST_SERVER_START_TIME,
         session_id: session_id.to_string(),
         session_name: "work".to_string(),
         window_id: window_id.to_string(),
@@ -220,10 +227,17 @@ fn snapshot_with_ids(ids: SnapshotIds<'_>) -> PaneSnapshot {
     }
 }
 
+fn test_server_key() -> String {
+    server_instance_key(TEST_SOCKET_PATH, TEST_SERVER_START_TIME)
+}
+
 fn temp_db_path() -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock before unix epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("tmux-pane-switcher-cli-test-{unique}.sqlite"))
+    let counter = TEST_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "tmux-pane-switcher-cli-test-{unique}-{counter}.sqlite"
+    ))
 }

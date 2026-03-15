@@ -29,19 +29,19 @@ decode_picker_field() {
 }
 
 jump_to_target() {
-  local server_key="$1"
+  local socket_path="$1"
   local session_id="$2"
   local window_id="$3"
   local pane_id="$4"
 
-  if [[ -z "${server_key}" || -z "${session_id}" || -z "${window_id}" || -z "${pane_id}" ]]; then
+  if [[ -z "${socket_path}" || -z "${session_id}" || -z "${window_id}" || -z "${pane_id}" ]]; then
     tmux display-message "Invalid jump target output from tmux-pane-switcher"
     exit 1
   fi
 
-  tmux -S "${server_key}" switch-client -t "${session_id}"
-  tmux -S "${server_key}" select-window -t "${window_id}"
-  tmux -S "${server_key}" select-pane -t "${pane_id}"
+  tmux -S "${socket_path}" switch-client -t "${session_id}"
+  tmux -S "${socket_path}" select-window -t "${window_id}"
+  tmux -S "${socket_path}" select-pane -t "${pane_id}"
 }
 
 open_jump_picker() {
@@ -93,10 +93,10 @@ run_jump_picker() {
     exit 0
   fi
 
-  local server_key session_id window_id pane_id
-  IFS=$'\t' read -r server_key session_id window_id pane_id _ <<< "${selection}"
+  local socket_path session_id window_id pane_id
+  IFS=$'\t' read -r socket_path session_id window_id pane_id _ <<< "${selection}"
   jump_to_target \
-    "$(decode_picker_field "${server_key}")" \
+    "$(decode_picker_field "${socket_path}")" \
     "$(decode_picker_field "${session_id}")" \
     "$(decode_picker_field "${window_id}")" \
     "$(decode_picker_field "${pane_id}")"

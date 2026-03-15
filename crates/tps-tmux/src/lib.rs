@@ -2,9 +2,9 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use tps_core::{PaneSnapshot, is_truthy};
+use tps_core::{PaneSnapshot, is_truthy, server_instance_key};
 
-const SNAPSHOT_FIELDS: [&str; 16] = [
+const SNAPSHOT_FIELDS: [&str; 17] = [
     "session_id",
     "session_name",
     "window_id",
@@ -21,6 +21,7 @@ const SNAPSHOT_FIELDS: [&str; 16] = [
     "pane_active",
     "pane_dead",
     "socket_path",
+    "start_time",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -49,13 +50,19 @@ impl TmuxClient {
 
         if snapshots
             .iter()
-            .any(|snapshot| snapshot.server_key.is_empty())
+            .any(|snapshot| snapshot.socket_path.is_empty() || snapshot.server_start_time == 0)
         {
-            let server_key = self.server_key()?;
+            let socket_path = self.socket_path()?;
+            let server_start_time = self.server_start_time()?;
             for snapshot in &mut snapshots {
-                if snapshot.server_key.is_empty() {
-                    snapshot.server_key = server_key.clone();
+                if snapshot.socket_path.is_empty() {
+                    snapshot.socket_path = socket_path.clone();
                 }
+                if snapshot.server_start_time == 0 {
+                    snapshot.server_start_time = server_start_time;
+                }
+                snapshot.server_key =
+                    server_instance_key(&snapshot.socket_path, snapshot.server_start_time);
             }
         }
 
@@ -63,12 +70,27 @@ impl TmuxClient {
     }
 
     pub fn server_key(&self) -> Result<String> {
+        let socket_path = self.socket_path()?;
+        let server_start_time = self.server_start_time()?;
+        Ok(server_instance_key(&socket_path, server_start_time))
+    }
+
+    pub fn socket_path(&self) -> Result<String> {
         let output = self.run(["display-message", "-p", "#{socket_path}"])?;
         let value = output.trim();
         if value.is_empty() {
             bail!("tmux did not return a socket path for the current server");
         }
         Ok(value.to_string())
+    }
+
+    pub fn server_start_time(&self) -> Result<i64> {
+        let output = self.run(["display-message", "-p", "#{start_time}"])?;
+        let value = output.trim();
+        if value.is_empty() {
+            bail!("tmux did not return a start time for the current server");
+        }
+        parse_i64(value, "start_time")
     }
 
     pub fn check_tmux(&self) -> Result<String> {
@@ -174,6 +196,12 @@ fn build_snapshot(fields: &[&str], observed_at: &str) -> Result<PaneSnapshot> {
     }
 
     Ok(PaneSnapshot {
+        server_key: server_instance_key(
+            fields[15],
+            parse_optional_i64(fields[16], "start_time")?.unwrap_or_default(),
+        ),
+        socket_path: fields[15].to_string(),
+        server_start_time: parse_optional_i64(fields[16], "start_time")?.unwrap_or_default(),
         session_id: fields[0].to_string(),
         session_name: fields[1].to_string(),
         window_id: fields[2].to_string(),
@@ -189,7 +217,6 @@ fn build_snapshot(fields: &[&str], observed_at: &str) -> Result<PaneSnapshot> {
         pane_title: fields[12].to_string(),
         pane_active: is_truthy(fields[13]),
         pane_dead: is_truthy(fields[14]),
-        server_key: fields[15].to_string(),
         observed_at: observed_at.to_string(),
     })
 }
@@ -233,8 +260,11 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{TmuxClient, parse_snapshot_output, snapshot_format};
+    use tps_core::server_instance_key;
 
     static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+    const TEST_SOCKET_PATH: &str = "/tmp/tmux.sock";
+    const TEST_SERVER_START_TIME: &str = "1773537318";
 
     #[test]
     fn parses_snapshot_rows() {
@@ -254,7 +284,8 @@ mod tests {
             "pane",
             "1",
             "0",
-            "/tmp/tmux.sock",
+            TEST_SOCKET_PATH,
+            TEST_SERVER_START_TIME,
         ]);
         let snapshot = parse_snapshot_output(&output, "123")
             .expect("parse snapshot")
@@ -263,6 +294,12 @@ mod tests {
         assert_eq!(snapshot.session_id, "$1");
         assert_eq!(snapshot.window_activity, Some(1773499610));
         assert!(snapshot.pane_active);
+        assert_eq!(snapshot.socket_path, TEST_SOCKET_PATH);
+        assert_eq!(snapshot.server_start_time, 1773537318);
+        assert_eq!(
+            snapshot.server_key,
+            server_instance_key(TEST_SOCKET_PATH, 1773537318)
+        );
     }
 
     #[test]
@@ -283,7 +320,8 @@ mod tests {
             "pane\tname\nsecond-line",
             "1",
             "0",
-            "/tmp/tmux.sock",
+            TEST_SOCKET_PATH,
+            TEST_SERVER_START_TIME,
         ]);
         let snapshot = parse_snapshot_output(&output, "123")
             .expect("parse snapshot")
@@ -313,7 +351,8 @@ mod tests {
             "✳ Fix organization client tests",
             "1",
             "0",
-            "/tmp/tmux.sock",
+            TEST_SOCKET_PATH,
+            TEST_SERVER_START_TIME,
         ]);
         let snapshot = parse_snapshot_output(&output, "123")
             .expect("parse snapshot")
@@ -348,7 +387,8 @@ mod tests {
             "pane title\nsecond line",
             "1",
             "0",
-            "/tmp/tmux.sock",
+            TEST_SOCKET_PATH,
+            TEST_SERVER_START_TIME,
         ]);
         fs::write(
             &script_path,

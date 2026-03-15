@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use tps_core::server_instance_key;
 use tps_tmux::TmuxClient;
 
 #[test]
@@ -34,7 +35,12 @@ fn collect_snapshot_round_trips_real_tmux_fields() {
         canonical_newline_dir.to_string_lossy()
     );
     assert_eq!(snapshot.pane_title, "✳ Fix organization client tests");
-    assert_eq!(snapshot.server_key, server.socket_path_string());
+    assert_eq!(snapshot.socket_path, server.socket_path_string());
+    assert_eq!(snapshot.server_start_time, server.start_time());
+    assert_eq!(
+        snapshot.server_key,
+        server_instance_key(&server.socket_path_string(), server.start_time())
+    );
     assert_eq!(snapshot.pane_id, pane_id);
 }
 
@@ -101,6 +107,12 @@ impl TempTmuxServer {
 
     fn socket_path_string(&self) -> String {
         self.socket_path.to_string_lossy().into_owned()
+    }
+
+    fn start_time(&self) -> i64 {
+        self.display("#{start_time}", "projéct:0.0")
+            .parse()
+            .expect("start time is an integer")
     }
 
     fn new_session(&self, name: &str, shell: String, start_directory: &Path) {

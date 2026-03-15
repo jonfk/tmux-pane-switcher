@@ -30,6 +30,8 @@ impl ProcessClass {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSnapshot {
     pub server_key: String,
+    pub socket_path: String,
+    pub server_start_time: i64,
     pub session_id: String,
     pub session_name: String,
     pub window_id: String,
@@ -51,6 +53,7 @@ pub struct PaneSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JumpTarget {
     pub server_key: String,
+    pub socket_path: String,
     pub session_id: String,
     pub window_id: String,
     pub pane_id: String,
@@ -83,6 +86,10 @@ impl RankedPane {
 
 pub fn is_truthy(value: &str) -> bool {
     matches!(value.trim(), "1" | "true" | "yes" | "on")
+}
+
+pub fn server_instance_key(socket_path: &str, server_start_time: i64) -> String {
+    format!("{socket_path}::{server_start_time}")
 }
 
 pub fn classify_command(command: &str) -> ProcessClass {

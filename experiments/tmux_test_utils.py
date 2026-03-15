@@ -256,6 +256,8 @@ class ControlModeClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
 
@@ -349,4 +351,3 @@ class ControlModeClient:
             output.append(line)
 
         fail(f"timed out waiting for control-mode output from: {command}")
-

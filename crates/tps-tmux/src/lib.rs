@@ -35,6 +35,12 @@ impl TmuxClient {
         }
     }
 
+    pub fn with_binary(binary: impl Into<String>) -> Self {
+        Self {
+            binary: binary.into(),
+        }
+    }
+
     pub fn collect_snapshot(&self) -> Result<Vec<PaneSnapshot>> {
         let format = snapshot_format();
         let output = self.run(["list-panes", "-a", "-F", &format])?;
@@ -139,7 +145,7 @@ fn parse_snapshot_output(mut output: &str, observed_at: &str) -> Result<Vec<Pane
         let mut fields = Vec::with_capacity(SNAPSHOT_FIELDS.len());
         for index in 0..SNAPSHOT_FIELDS.len() {
             let (length, remainder) = parse_length_prefix(output)?;
-            let (value, remainder) = take_chars(remainder, length)
+            let (value, remainder) = take_bytes(remainder, length)
                 .with_context(|| format!("snapshot field {} was shorter than advertised", index))?;
             fields.push(value);
             output = remainder;
@@ -173,21 +179,12 @@ fn parse_length_prefix(input: &str) -> Result<(usize, &str)> {
     Ok((length, remainder))
 }
 
-fn take_chars(input: &str, count: usize) -> Option<(&str, &str)> {
-    if count == 0 {
-        return Some(("", input));
+fn take_bytes(input: &str, count: usize) -> Option<(&str, &str)> {
+    if count > input.len() || !input.is_char_boundary(count) {
+        return None;
     }
 
-    let mut end = None;
-    for (seen, (index, ch)) in input.char_indices().enumerate() {
-        if seen + 1 == count {
-            end = Some(index + ch.len_utf8());
-            break;
-        }
-    }
-
-    let end = end?;
-    Some((&input[..end], &input[end..]))
+    Some((&input[..count], &input[count..]))
 }
 
 fn build_snapshot(fields: &[&str], observed_at: &str) -> Result<PaneSnapshot> {
@@ -324,6 +321,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_snapshot_rows_with_multibyte_utf8() {
+        let output = prefixed_snapshot_row(&[
+            "$1",
+            "projéct",
+            "@3",
+            "3",
+            "editor",
+            "1773499610",
+            "1",
+            "%5",
+            "0",
+            "4242",
+            "zsh",
+            "/tmp",
+            "✳ Fix organization client tests",
+            "1",
+            "0",
+            "/tmp/tmux.sock",
+        ]);
+        let snapshot = parse_snapshot_output(&output, "123")
+            .expect("parse snapshot")
+            .pop()
+            .expect("one snapshot");
+
+        assert_eq!(snapshot.session_name, "projéct");
+        assert_eq!(snapshot.pane_title, "✳ Fix organization client tests");
+    }
+
+    #[test]
     #[cfg(unix)]
     fn jump_uses_target_server_socket() {
         let temp_dir = test_temp_dir("jump");
@@ -450,7 +476,7 @@ exit 1
             if index > 0 {
                 output.push('\t');
             }
-            output.push_str(&field.chars().count().to_string());
+            output.push_str(&field.len().to_string());
             output.push('\t');
             output.push_str(field);
         }

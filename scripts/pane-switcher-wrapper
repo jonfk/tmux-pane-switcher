@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+current_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 cli_bin="$(tmux show-option -gqv '@pane-switcher-cli' || true)"
 if [[ -z "${cli_bin}" ]]; then
   cli_bin="${TPS_CLI_BIN:-tmux-pane-switcher}"
+fi
+
+jump_limit="$(tmux show-option -gqv '@pane-switcher-jump-limit' || true)"
+if [[ -z "${jump_limit}" ]]; then
+  jump_limit="${TPS_JUMP_LIMIT:-200}"
 fi
 
 if ! command -v "${cli_bin}" >/dev/null 2>&1; then
@@ -11,20 +18,17 @@ if ! command -v "${cli_bin}" >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ $# -gt 0 && "$1" == "jump" ]]; then
-  shift
+shell_join() {
+  local joined
+  printf -v joined '%q ' "$@"
+  printf '%s' "${joined% }"
+}
 
-  if ! output="$("${cli_bin}" list-ranked --limit 1 --format jump-target "$@" 2>&1)"; then
-    tmux display-message "${output}"
-    exit 1
-  fi
-
-  if [[ -z "${output}" ]]; then
-    tmux display-message "No ranked tmux pane available"
-    exit 1
-  fi
-
-  IFS=$'\t' read -r server_key session_id window_id pane_id <<< "${output}"
+jump_to_target() {
+  local server_key="$1"
+  local session_id="$2"
+  local window_id="$3"
+  local pane_id="$4"
 
   if [[ -z "${server_key}" || -z "${session_id}" || -z "${window_id}" || -z "${pane_id}" ]]; then
     tmux display-message "Invalid jump target output from tmux-pane-switcher"
@@ -34,6 +38,90 @@ if [[ $# -gt 0 && "$1" == "jump" ]]; then
   tmux -S "${server_key}" switch-client -t "${session_id}"
   tmux -S "${server_key}" select-window -t "${window_id}"
   tmux -S "${server_key}" select-pane -t "${pane_id}"
+}
+
+open_jump_picker() {
+  if ! command -v fzf >/dev/null 2>&1; then
+    tmux display-message "fzf not found; install fzf to use pane jump picker"
+    exit 1
+  fi
+
+  local popup_command
+  popup_command="$(shell_join "${current_dir}/pane-switcher-wrapper" jump --fzf-picker "$@")"
+
+  if ! tmux display-popup -E -T "Pane Switcher" -w "85%" -h "60%" "${popup_command}"; then
+    tmux display-message "Unable to open pane switcher picker"
+    exit 1
+  fi
+}
+
+run_jump_picker() {
+  if ! command -v fzf >/dev/null 2>&1; then
+    tmux display-message "fzf not found; install fzf to use pane jump picker"
+    exit 1
+  fi
+
+  local table_output
+  if ! table_output="$("${cli_bin}" list-ranked --limit "${jump_limit}" --format table "$@" 2>&1)"; then
+    tmux display-message "${table_output}"
+    exit 1
+  fi
+
+  local jump_output
+  if ! jump_output="$("${cli_bin}" list-ranked --limit "${jump_limit}" --format jump-target "$@" 2>&1)"; then
+    tmux display-message "${jump_output}"
+    exit 1
+  fi
+
+  if [[ -z "${table_output}" || -z "${jump_output}" ]]; then
+    tmux display-message "No ranked tmux pane available"
+    exit 1
+  fi
+
+  local selection
+  if ! selection="$(
+    {
+      printf '\t\t\t\tCommand\tSession:Pane\tWindow\tTitle\n'
+      paste <(printf '%s\n' "${jump_output}") <(printf '%s\n' "${table_output}") | while IFS=$'\t' read -r server_key session_id window_id pane_id _ command window_pane session_name window_name display_title; do
+        [[ -n "${pane_id}" ]] || continue
+        printf '%s\t%s\t%s\t%s\t%s\t%s:%s\t%s\t%s\n' \
+          "${server_key}" \
+          "${session_id}" \
+          "${window_id}" \
+          "${pane_id}" \
+          "${command}" \
+          "${session_name}" \
+          "${window_pane}" \
+          "${window_name}" \
+          "${display_title}"
+      done
+    } | fzf \
+      --delimiter=$'\t' \
+      --with-nth=5.. \
+      --nth=5.. \
+      --header-lines=1 \
+      --prompt='Jump pane> ' \
+      --no-sort \
+      --layout=reverse
+  )"; then
+    exit 0
+  fi
+
+  local server_key session_id window_id pane_id
+  IFS=$'\t' read -r server_key session_id window_id pane_id _ <<< "${selection}"
+  jump_to_target "${server_key}" "${session_id}" "${window_id}" "${pane_id}"
+}
+
+if [[ $# -gt 0 && "$1" == "jump" ]]; then
+  shift
+
+  if [[ $# -gt 0 && "$1" == "--fzf-picker" ]]; then
+    shift
+    run_jump_picker "$@"
+    exit 0
+  fi
+
+  open_jump_picker "$@"
   exit 0
 fi
 

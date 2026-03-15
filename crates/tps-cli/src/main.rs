@@ -1,15 +1,14 @@
 use std::env;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use tps_core::JumpTarget;
 use tps_store::Store;
 use tps_tmux::TmuxClient;
 
 #[derive(Debug, Parser)]
 #[command(name = "tmux-pane-switcher")]
-#[command(about = "Rank and jump between tmux panes based on recent activity")]
+#[command(about = "Observe and rank tmux panes based on recent activity")]
 struct Cli {
     #[arg(long)]
     db_path: Option<PathBuf>,
@@ -29,16 +28,6 @@ enum Commands {
         #[arg(long)]
         server_key: Option<String>,
     },
-    Jump {
-        #[arg(long)]
-        server_key: Option<String>,
-        #[arg(long)]
-        session_id: Option<String>,
-        #[arg(long)]
-        window_id: Option<String>,
-        #[arg(long)]
-        pane_id: Option<String>,
-    },
     Doctor,
 }
 
@@ -46,6 +35,7 @@ enum Commands {
 enum OutputFormat {
     Table,
     TmuxTarget,
+    JumpTarget,
 }
 
 fn main() {
@@ -83,32 +73,18 @@ fn run() -> Result<()> {
                         println!("{}", pane.tmux_target());
                     }
                 }
-            }
-        }
-        Commands::Jump {
-            server_key,
-            session_id,
-            window_id,
-            pane_id,
-        } => {
-            let target = match (session_id, window_id, pane_id) {
-                (Some(session_id), Some(window_id), Some(pane_id)) => JumpTarget {
-                    server_key: resolve_server_key(server_key, &tmux)?,
-                    session_id,
-                    window_id,
-                    pane_id,
-                },
-                (None, None, None) => {
-                    let server_key = resolve_server_key(server_key, &tmux)?;
-                    let store = Store::open(&db_path)?;
-                    store
-                        .top_ranked(&server_key)?
-                        .ok_or_else(|| anyhow::anyhow!("no ranked tmux pane available"))?
+                OutputFormat::JumpTarget => {
+                    for pane in panes {
+                        println!(
+                            "{}\t{}\t{}\t{}",
+                            pane.target.server_key,
+                            pane.target.session_id,
+                            pane.target.window_id,
+                            pane.target.pane_id
+                        );
+                    }
                 }
-                _ => bail!("pass all of --session-id, --window-id, and --pane-id, or none of them"),
-            };
-
-            tmux.jump(&target)?;
+            }
         }
         Commands::Doctor => {
             let version = tmux.check_tmux().context("tmux is not available")?;
